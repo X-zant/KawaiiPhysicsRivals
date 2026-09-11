@@ -158,14 +158,44 @@ runtime. The contents are irrelevant — only the path, name and class matter.
 ### Which nodes it recreates
 
 Node types are read from the export, not guessed: the generated class names the exact
-struct behind every node property. Handled: `AnimNode_KawaiiPhysics`,
-`AnimNode_KawaiiPhysicsMerge`, and `AnimNode_PoseDriver`.
+struct behind every node property.
 
-A physics AnimBlueprint usually contains stock engine nodes too — pose-space conversions,
-`LinkedInputPose`, `Root`, sometimes `LayeredBoneBlend` or Constraint nodes. Those are stock
-UE, work in a stock 5.3.2 editor already, and are not this plugin's to recreate. Anything
-skipped is **named** in the result (`SkippedNodeTypes`) and in the dialog, so a partial
-graph is never silent.
+Coverage is driven by what the game actually ships, not by guesswork. Every anim node
+across all **3,531** cooked `*_Physics` packages in the paks:
+
+| Node | Instances | Packages | Imported |
+|---|---:|---:|:---:|
+| `AnimNode_KawaiiPhysics` | 6760 | 507 | ✅ |
+| `AnimNode_Constraint` | 1533 | 202 | ✅ |
+| `AnimNode_PoseDriver` | 593 | 257 | ✅ |
+| `AnimNode_ModifyBone` | 305 | 104 | ✅ |
+| `AnimNode_KawaiiPhysicsMerge` | 142 | 43 | ✅ |
+| `AnimNode_CopyBone` | 2 | 2 | ✅ |
+| `AnimNode_Root` | 622 | 622 | graph plumbing |
+| `AnimNode_LinkedInputPose` | 622 | 622 | graph plumbing |
+| `AnimNode_ConvertComponentToLocalSpace` | 602 | 588 | graph plumbing |
+| `AnimNode_ConvertLocalToComponentSpace` | 602 | 588 | graph plumbing |
+| `AnimNode_UseCachedPose` | 72 | 36 | graph plumbing |
+| `AnimNode_LayeredBoneBlend` | 45 | 36 | ❌ see gaps |
+| `AnimNode_SaveCachedPose` | 40 | 40 | graph plumbing |
+| `AnimNode_BlendListByInt` | 36 | 36 | ❌ see gaps |
+| `AnimNode_ApplyAdditive` | 4 | 4 | ❌ see gaps |
+| `AnimNode_SequencePlayer` | 4 | 4 | ❌ see gaps |
+
+"Graph plumbing" is the pose routing a physics graph is wired through
+(`LinkedInputPose` → `LocalToComponentSpace` → … → `ComponentToLocalSpace` → `Root`).
+It is stock UE, identical in every such asset, and how your own Blueprint should be wired
+is your call — so it is reported rather than recreated.
+
+The unhandled ones all take **multiple** pose inputs, which the single `ComponentPose`
+link-restoration path does not cover. They are rare, and never carry Kawaii data
+themselves.
+
+Anything skipped is **named** in the result (`SkippedNodeTypes`) and in the dialog, so a
+partial graph is never silent.
+
+The census is reproducible: `SchemaCheck --scan-nodes` walks the paks with CUE4Parse and
+tallies node structs the same way the importer reads them.
 
 ### What it deliberately does not do
 
@@ -246,9 +276,11 @@ bytes. Editor preview fidelity is a convenience.
 - `FBoneShape` / `CustomShapes` serialize; they are not yet fed into collision.
 - Legacy `UCurveFloat` references on pre-refactor nodes are not auto-migrated to inline
   curves; the node logs a warning naming the problem.
-- `AnimNode_LayeredBoneBlend` is not recreated on import (it needs multi-pose-input link
-  restoration). Kawaii nodes in such a graph still convert; the blend node is reported as
-  skipped.
+- Multi-pose-input nodes are not recreated on import: `LayeredBoneBlend` (45 instances
+  game-wide), `BlendListByInt` (36), `ApplyAdditive` (4), `SequencePlayer` (4). Link
+  restoration follows a single `ComponentPose`, so a node with several pose inputs cannot
+  be rewired from `LinkID` alone. Kawaii nodes in such a graph still convert; the blend
+  node is reported as skipped.
 - Inside `CollisionChannelSettings`, a few `FBodyInstance` fields the game extends
   (`AccelerationStructureType`, `PenetrationDepth`, `GameTraceChannel19`–`23`, …) have no
   stock-engine counterpart and do not import. No observed export sets

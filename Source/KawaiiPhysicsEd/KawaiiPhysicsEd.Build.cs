@@ -12,6 +12,10 @@ public class KawaiiPhysicsEd : ModuleRules
 		{
 			"Core", "CoreUObject", "Engine", "InputCore", "KawaiiPhysics",
 			"AnimGraph", "BlueprintGraph", "Persona", "UnrealEd", "AnimGraphRuntime",
+			// FAnimNode_Constraint's descriptions (FAimConstraintDescription and
+			// friends) are defined in AnimationCore, not AnimGraphRuntime; the
+			// JSON importer recreates Constraint nodes, so it needs them linked.
+			"AnimationCore",
 			"Slate", "SlateCore", "EditorFramework",
 			// BaseClass of the edit mode moved into its own module in 5.1.
 			"AnimationEditMode",

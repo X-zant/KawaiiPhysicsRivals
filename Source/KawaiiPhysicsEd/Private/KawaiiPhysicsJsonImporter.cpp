@@ -9,11 +9,17 @@
 #include "KawaiiPhysicsExternalForce.h"
 #include "KawaiiPhysicsEd.h"
 
+#include "AnimGraphNode_Constraint.h"
+#include "AnimGraphNode_CopyBone.h"
+#include "AnimGraphNode_ModifyBone.h"
 #include "AnimGraphNode_PoseDriver.h"
 #include "Animation/AnimBlueprint.h"
 #include "Animation/PoseAsset.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AnimNodes/AnimNode_PoseDriver.h"
+#include "BoneControllers/AnimNode_Constraint.h"
+#include "BoneControllers/AnimNode_CopyBone.h"
+#include "BoneControllers/AnimNode_ModifyBone.h"
 #include "UObject/Package.h"
 #include "Misc/PackageName.h"
 #include "UObject/SavePackage.h"
@@ -900,11 +906,21 @@ FKawaiiPhysicsJsonImportResult UKawaiiPhysicsJsonImporter::ImportIntoGraph(UEdGr
 		// conversions -- belongs to the engine and is reported, not invented.
 		const bool bIsKawaii = StructType == TEXT("AnimNode_KawaiiPhysics");
 		const bool bIsKawaiiMerge = StructType == TEXT("AnimNode_KawaiiPhysicsMerge");
-		// Pose Driver is a stock engine node, but a physics AnimBlueprint's
-		// drivers are part of the setup being recovered, so they come across too.
-		const bool bIsPoseDriver = StructType == TEXT("AnimNode_PoseDriver");
 
-		if (!bIsKawaii && !bIsKawaiiMerge && !bIsPoseDriver)
+		// Stock engine bone controllers that the game's physics graphs are built
+		// out of alongside the Kawaii chains. They are not this plugin's nodes,
+		// but they are part of the setup being recovered, and a graph missing
+		// them is not the setup the game runs.
+		//
+		// Counted across all 3,531 cooked *_Physics packages: Constraint 1533,
+		// PoseDriver 593, ModifyBone 305, CopyBone 2. Each takes a single
+		// component-space pose input, so the generic path below handles them.
+		const bool bIsPoseDriver = StructType == TEXT("AnimNode_PoseDriver");
+		const bool bIsConstraint = StructType == TEXT("AnimNode_Constraint");
+		const bool bIsModifyBone = StructType == TEXT("AnimNode_ModifyBone");
+		const bool bIsCopyBone = StructType == TEXT("AnimNode_CopyBone");
+
+		if (!bIsKawaii && !bIsKawaiiMerge && !bIsPoseDriver && !bIsConstraint && !bIsModifyBone && !bIsCopyBone)
 		{
 			if (!StructType.IsEmpty())
 			{
@@ -930,9 +946,21 @@ FKawaiiPhysicsJsonImportResult UKawaiiPhysicsJsonImporter::ImportIntoGraph(UEdGr
 		{
 			KAWAIIPHYSICS_IMPORT_NODE(FAnimNode_KawaiiPhysicsMerge, UAnimGraphNode_KawaiiPhysicsMerge)
 		}
-		else
+		else if (bIsPoseDriver)
 		{
 			KAWAIIPHYSICS_IMPORT_NODE(FAnimNode_PoseDriver, UAnimGraphNode_PoseDriver)
+		}
+		else if (bIsConstraint)
+		{
+			KAWAIIPHYSICS_IMPORT_NODE(FAnimNode_Constraint, UAnimGraphNode_Constraint)
+		}
+		else if (bIsModifyBone)
+		{
+			KAWAIIPHYSICS_IMPORT_NODE(FAnimNode_ModifyBone, UAnimGraphNode_ModifyBone)
+		}
+		else
+		{
+			KAWAIIPHYSICS_IMPORT_NODE(FAnimNode_CopyBone, UAnimGraphNode_CopyBone)
 		}
 
 		#undef KAWAIIPHYSICS_IMPORT_NODE
