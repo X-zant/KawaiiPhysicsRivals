@@ -42,8 +42,12 @@
 
 namespace
 {
-	/** Property name prefix the anim BP compiler gives every generated node. */
-	const TCHAR* AnimNodePropertyPrefix = TEXT("AnimGraphNode_");
+	/**
+	 * Every anim node struct is named FAnimNode_*, which is what makes a class
+	 * property a node. Property NAMES are not reliable for this -- see the note
+	 * where the node list is built.
+	 */
+	const TCHAR* AnimNodeStructPrefix = TEXT("AnimNode_");
 
 	/**
 	 * Pulls "AnimNode_KawaiiPhysics" out of an FModel struct reference such as
@@ -846,8 +850,15 @@ FKawaiiPhysicsJsonImportResult UKawaiiPhysicsJsonImporter::ImportIntoGraph(UEdGr
 		return Result;
 	}
 
-	// LinkID indexes the class's anim-node properties in declaration order,
-	// counting only the compiler-generated node properties.
+	// LinkID indexes the class's anim-node properties in declaration order, so
+	// this list has to contain every node property and nothing else.
+	//
+	// A node is identified by the struct behind it, NOT by its property name.
+	// The compiler usually names them "AnimGraphNode_<Type>_<N>", but a node
+	// given a name in the editor keeps that name instead -- the game ships
+	// several, e.g. "RivetConstraint_1" for an FAnimNode_Constraint in
+	// Post_1014102_Lobby_Physics. Matching on the name prefix would drop those,
+	// and dropping one shifts every LinkID after it, silently rewiring the graph.
 	TArray<FString> NodePropertyOrder;
 	TArray<FString> NodeStructTypes;
 	const TArray<TSharedPtr<FJsonValue>>* ChildProperties = nullptr;
@@ -860,13 +871,17 @@ FKawaiiPhysicsJsonImportResult UKawaiiPhysicsJsonImporter::ImportIntoGraph(UEdGr
 				continue;
 			}
 
+			const FString StructTypeName = ReadStructTypeName(ChildValue->AsObject());
+			if (!StructTypeName.StartsWith(AnimNodeStructPrefix))
+			{
+				continue;
+			}
+
 			FString ChildName;
 			ChildValue->AsObject()->TryGetStringField(TEXT("Name"), ChildName);
-			if (ChildName.StartsWith(AnimNodePropertyPrefix))
-			{
-				NodePropertyOrder.Add(ChildName);
-				NodeStructTypes.Add(ReadStructTypeName(ChildValue->AsObject()));
-			}
+
+			NodePropertyOrder.Add(ChildName);
+			NodeStructTypes.Add(StructTypeName);
 		}
 	}
 

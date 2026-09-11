@@ -140,8 +140,8 @@ anything with no matching property, so "did all of it come across?" is a measure
 rather than a belief.
 
 **Graph wiring** is recovered from each node's `ComponentPose.LinkID`, an index into the
-generated class's anim-node properties in declaration order, counting only `AnimGraphNode_*`
-entries.
+generated class's anim-node properties in declaration order — every property whose struct is
+an `FAnimNode_*`, whatever the property happens to be named.
 
 ### Referenced assets are stubbed, not dropped
 
@@ -161,7 +161,7 @@ Node types are read from the export, not guessed: the generated class names the 
 struct behind every node property.
 
 Coverage is driven by what the game actually ships, not by guesswork. Every anim node
-across all **3,531** cooked `*_Physics` packages in the paks:
+across all **622** cooked physics Anim Blueprints in the paks:
 
 | Node | Instances | Packages | Imported |
 |---|---:|---:|:---:|
@@ -193,6 +193,22 @@ themselves.
 
 Anything skipped is **named** in the result (`SkippedNodeTypes`) and in the dialog, so a
 partial graph is never silent.
+
+**547 of the 622 (87.9%) import with nothing of substance left behind.** The other 75 all
+stop at a multi-pose-input node; their Kawaii chains still convert.
+
+Node identity comes from the *struct* behind each class property, never the property name.
+The compiler usually names them `AnimGraphNode_<Type>_<N>`, but a node named in the editor
+keeps that name -- the game ships several, e.g. `RivetConstraint_1` for an
+`FAnimNode_Constraint`. Matching on the name would drop those, and dropping one shifts every
+`LinkID` after it, silently rewiring the graph.
+
+Beyond anim nodes these assets hold nothing but compiler-generated support objects
+(`AnimBlueprintExtension_*`, `UberGraphFrame`), which the anim BP compiler recreates. The
+only authored exceptions game-wide are five Blueprint variables in five separate assets
+(`Effector Transform`, `Stream_0`, `Limit Angle Curve Data`, `ConstOff`, `Alpha`), all at
+default values and driven by event-graph bytecode that is not recoverable from a cooked
+asset in any case.
 
 The census is reproducible: `SchemaCheck --scan-nodes` walks the paks with CUE4Parse and
 tallies node structs the same way the importer reads them.
