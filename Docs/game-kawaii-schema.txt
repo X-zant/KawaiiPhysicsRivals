@@ -1,0 +1,503 @@
+# KawaiiPhysics reflected schema, read from the shipped game's .usmap
+# source: E:\RX_Port\reference\SDK-S9_5\5.3.2-3761137+++depot_marvel+S9.5_release-Marvel\Mappings\5.3.2-3761137+++depot_marvel+S9.5_release-Marvel.usmap
+# usmap version ExplicitEnumValues
+#
+# Properties are listed by schema index -- the order the engine serializes
+# them under unversioned property serialization. A rebuilt plugin must
+# declare them in exactly this order.
+
+################ ENUMS ################
+
+enum EPlanarConstraint  (5 values)
+      0 = None
+      1 = X
+      2 = Y
+      3 = Z
+      4 = EPlanarConstraint_MAX
+
+enum EBoneForwardAxis  (7 values)
+      0 = X_Positive
+      1 = X_Negative
+      2 = Y_Positive
+      3 = Y_Negative
+      4 = Z_Positive
+      5 = Z_Negative
+      6 = EBoneForwardAxis_MAX
+
+enum ECollisionLimitType  (7 values)
+      0 = None
+      1 = Spherical
+      2 = Capsule
+      3 = Box
+      4 = Planar
+      5 = CapsuleBone
+      6 = ECollisionLimitType_MAX
+
+enum ECollisionSourceType  (4 values)
+      0 = AnimNode
+      1 = DataAsset
+      2 = PhysicsAsset
+      3 = ECollisionSourceType_MAX
+
+enum EXPBDComplianceType  (8 values)
+      0 = Concrete
+      1 = Wood
+      2 = Leather
+      3 = Tendon
+      4 = Rubber
+      5 = Muscle
+      6 = Fat
+      7 = EXPBDComplianceType_MAX
+
+enum EBoneShapeType  (3 values)
+      0 = Sphere
+      1 = Capusle
+      2 = EBoneShapeType_MAX
+
+enum EExternalForceSpace  (4 values)
+      0 = ComponentSpace
+      1 = WorldSpace
+      2 = BoneSpace
+      3 = EExternalForceSpace_MAX
+
+enum EExternalForceCurveEvaluateType  (5 values)
+      0 = Single
+      1 = Average
+      2 = Max
+      3 = Min
+      4 = EExternalForceCurveEvaluateType_MAX
+
+enum EKawaiiPhysicsAccessExternalForceResult  (3 values)
+      0 = Valid
+      1 = NotValid
+      2 = EKawaiiPhysicsAccessExternalForceResult_MAX
+
+################ STRUCTS / CLASSES ################
+
+struct CollisionLimitBase : <none>   (own properties: 10)
+    [  0] bUseParentCompBone : BoolProperty
+    [  1] DrivingBone : struct BoneReference
+    [  2] ParentDrivingBoneName : NameProperty
+    [  3] SlotID : IntProperty
+    [  4] OffsetLocation : struct Vector
+    [  5] OffsetRotation : struct Rotator
+    [  6] Location : struct Vector
+    [  7] Rotation : struct Quat
+    [  8] bEnable : BoolProperty
+    [  9] SourceType : enum ECollisionSourceType (as byte)
+
+struct SphericalLimit : CollisionLimitBase   (own properties: 2)
+    [  0] Radius : FloatProperty
+    [  1] LimitType : enum ESphericalLimitType (as byte)
+
+struct CapsuleLimit : CollisionLimitBase   (own properties: 2)
+    [  0] Radius : FloatProperty
+    [  1] Length : FloatProperty
+
+struct BoxLimit : CollisionLimitBase   (own properties: 1)
+    [  0] Extent : struct Vector
+
+struct PlanarLimit : CollisionLimitBase   (own properties: 1)
+    [  0] Plane : struct Plane
+
+struct KawaiiPhysicsRootBoneSetting : <none>   (own properties: 3)
+    [  0] RootBone : struct BoneReference
+    [  1] OverrideExcludeBones : TArray<struct BoneReference>
+    [  2] bUseOverrideExcludeBones : BoolProperty
+
+struct KawaiiPhysicsSettings : <none>   (own properties: 8)
+    [  0] Damping : FloatProperty
+    [  1] Stiffness : FloatProperty
+    [  2] WorldDampingLocation : FloatProperty
+    [  3] WorldDampingRotation : FloatProperty
+    [  4] Radius : FloatProperty
+    [  5] LimitAngle : FloatProperty
+    [  6] LimitLinear : FloatProperty
+    [  7] GravityScale : FloatProperty
+
+struct KawaiiPhysicsModifyBone : <none>   (own properties: 21)
+    [  0] BoneRef : struct BoneReference
+    [  1] Index : IntProperty
+    [  2] ParentIndex : IntProperty
+    [  3] ChildIndices : TArray<IntProperty>
+    [  4] PhysicsSettings : struct KawaiiPhysicsSettings
+    [  5] Location : struct Vector
+    [  6] Rotation : struct Quat
+    [  7] OffsetRotation : struct Quat
+    [  8] PrevLocation : struct Vector
+    [  9] PrevRotation : struct Quat
+    [ 10] PoseLocation : struct Vector
+    [ 11] PoseRotation : struct Quat
+    [ 12] PoseScale : struct Vector
+    [ 13] LengthFromRoot : FloatProperty
+    [ 14] LengthRateFromRoot : FloatProperty
+    [ 15] bDummy : BoolProperty
+    [ 16] bSkipSimulate : BoolProperty
+    [ 17] bFixed : BoolProperty
+    [ 18] bHasFollowBone : BoolProperty
+    [ 19] bChildOfWaveBeginBone : BoolProperty
+    [ 20] WaveAmplitude : FloatProperty
+
+struct ModifyBoneConstraint : <none>   (own properties: 9)
+    [  0] Bone1 : struct BoneReference
+    [  1] Bone2 : struct BoneReference
+    [  2] bOverrideCompliance : BoolProperty
+    [  3] ComplianceType : enum EXPBDComplianceType (as byte)
+    [  4] ModifyBoneIndex1 : IntProperty
+    [  5] ModifyBoneIndex2 : IntProperty
+    [  6] Length : FloatProperty
+    [  7] bIsDummy : BoolProperty
+    [  8] Lambda : FloatProperty
+
+struct BoneShape : <none>   (own properties: 4)
+    [  0] DrivingBone : struct BoneReference
+    [  1] ShapeType : enum EBoneShapeType (as byte)
+    [  2] HalfHeight : FloatProperty
+    [  3] OffsetRotation : struct Rotator
+
+struct BonePhysicsParams : <none>   (own properties: 24)
+    [  0] Damping : FloatProperty
+    [  1] bNeedEditDamping : BoolProperty
+    [  2] Stiffness : FloatProperty
+    [  3] bNeedEditStiffness : BoolProperty
+    [  4] SpringStiffness : FloatProperty
+    [  5] WorldDampingLocation : FloatProperty
+    [  6] bNeedEditWorldDampingLocation : BoolProperty
+    [  7] WorldDampingRotation : FloatProperty
+    [  8] bNeedEditWorldDampingRotation : BoolProperty
+    [  9] Radius : FloatProperty
+    [ 10] bNeedEditRadius : BoolProperty
+    [ 11] LimitAngle : FloatProperty
+    [ 12] bNeedEditLimitAngle : BoolProperty
+    [ 13] LimitLinear : FloatProperty
+    [ 14] bNeedEditLimitLinear : BoolProperty
+    [ 15] GravityScale : FloatProperty
+    [ 16] bNeedEditGravityScale : BoolProperty
+    [ 17] bLimitRelativeRotation : BoolProperty
+    [ 18] bAllowPositiveRelativeRotationX : BoolProperty
+    [ 19] bAllowNegativeRelativeRotationX : BoolProperty
+    [ 20] bAllowPositiveRelativeRotationY : BoolProperty
+    [ 21] bAllowNegativeRelativeRotationY : BoolProperty
+    [ 22] bAllowPositiveRelativeRotationZ : BoolProperty
+    [ 23] bAllowNegativeRelativeRotationZ : BoolProperty
+
+struct BoneSettings : <none>   (own properties: 9)
+    [  0] RootBone : struct BoneReference
+    [  1] ExcludeBones : TArray<struct BoneReference>
+    [  2] bRootBoneSimulate : BoolProperty
+    [  3] bShouldFixTailBone : BoolProperty
+    [  4] FixedBone : struct BoneReference
+    [  5] FollowBone : struct BoneReference
+    [  6] AdditionalRootBones : TArray<struct KawaiiPhysicsRootBoneSetting>
+    [  7] DummyBoneLength : FloatProperty
+    [  8] BoneForwardAxis : enum EBoneForwardAxis (as byte)
+
+struct WaveAnimSettings : <none>   (own properties: 7)
+    [  0] bEnableWaveAnim : BoolProperty
+    [  1] WaveBeginBone : struct BoneReference
+    [  2] WaveFrequncy : FloatProperty
+    [  3] WaveNum : FloatProperty
+    [  4] WaveDirection : struct Vector
+    [  5] WaveAmplitude : FloatProperty
+    [  6] WaveAmplitudeCurveData : struct RuntimeFloatCurve
+
+struct BoneChainPhysicsSettings : <none>   (own properties: 15)
+    [  0] PhysicsSettings : struct KawaiiPhysicsSettings
+    [  1] CustomShapes : TArray<struct BoneShape>
+    [  2] bUseCurve : BoolProperty
+    [  3] PhysicsParamsPerBone : TArray<struct BonePhysicsParams>
+    [  4] TeleportDistanceThreshold : FloatProperty
+    [  5] TeleportRotationThreshold : FloatProperty
+    [  6] PlanarConstraint : enum EPlanarConstraint (as byte)
+    [  7] LimitLinearCurveData : struct RuntimeFloatCurve
+    [  8] GravityCurveData : struct RuntimeFloatCurve
+    [  9] DampingCurveData : struct RuntimeFloatCurve
+    [ 10] StiffnessCurveData : struct RuntimeFloatCurve
+    [ 11] WorldDampingLocationCurveData : struct RuntimeFloatCurve
+    [ 12] WorldDampingRotationCurveData : struct RuntimeFloatCurve
+    [ 13] RadiusCurveData : struct RuntimeFloatCurve
+    [ 14] LimitAngleCurveData : struct RuntimeFloatCurve
+
+struct BoneConstraintSettings : <none>   (own properties: 7)
+    [  0] BoneConstraintGlobalComplianceType : enum EXPBDComplianceType (as byte)
+    [  1] BoneConstraintIterationCountBeforeCollision : IntProperty
+    [  2] BoneConstraintIterationCountAfterCollision : IntProperty
+    [  3] bAutoAddChildDummyBoneConstraint : BoolProperty
+    [  4] BoneConstraints : TArray<struct ModifyBoneConstraint>
+    [  5] BoneConstraintsDataAsset : UObject*
+    [  6] BoneConstraintsData : TArray<struct ModifyBoneConstraint>
+
+struct ExternalForceSettings : <none>   (own properties: 5)
+    [  0] Gravity : struct Vector
+    [  1] bEnableWind : BoolProperty
+    [  2] WindScale : FloatProperty
+    [  3] ExternalForces : TArray<struct InstancedStruct>
+    [  4] CustomExternalForces : TArray<UObject*>
+
+struct KawaiiPhysicsChain : <none>   (own properties: 10)
+    [  0] BoneSettings : struct BoneSettings
+    [  1] PhysicsSettings : struct BoneChainPhysicsSettings
+    [  2] BoneConstraintSettings : struct BoneConstraintSettings
+    [  3] ExternalForceSettings : struct ExternalForceSettings
+    [  4] WaveAnimSettings : struct WaveAnimSettings
+    [  5] ModifyBones : TArray<struct KawaiiPhysicsModifyBone>
+    [  6] TotalBoneLength : FloatProperty
+    [  7] WaveBeginBoneLengthFromRoot : FloatProperty
+    [  8] AutoConfiguredLODThreshold : IntProperty
+    [  9] CachedOwnerNetRole : enum ENetRole (as byte)
+
+struct AnimNode_KawaiiPhysics : AnimNode_SkeletalControlBase   (own properties: 78)
+    [  0] Chains : TArray<struct KawaiiPhysicsChain>
+    [  1] TargetFramerate : IntProperty
+    [  2] OverrideTargetFramerate : BoolProperty
+    [  3] WarmUpFrames : IntProperty
+    [  4] bUseWarmUpWhenResetDynamics : BoolProperty
+    [  5] bNeedWarmUp : BoolProperty
+    [  6] bUpdatePhysicsSettingsInGame : BoolProperty
+    [  7] ResetBoneTransformWhenBoneNotFound : BoolProperty
+    [  8] SphericalLimits : TArray<struct SphericalLimit>
+    [  9] CapsuleLimits : TArray<struct CapsuleLimit>
+    [ 10] BoxLimits : TArray<struct BoxLimit>
+    [ 11] PlanarLimits : TArray<struct PlanarLimit>
+    [ 12] LimitsDataAsset : UObject*
+    [ 13] PhysicsAssetForLimits : UObject*
+    [ 14] SphericalLimitsData : TArray<struct SphericalLimit>
+    [ 15] CapsuleLimitsData : TArray<struct CapsuleLimit>
+    [ 16] BoxLimitsData : TArray<struct BoxLimit>
+    [ 17] PlanarLimitsData : TArray<struct PlanarLimit>
+    [ 18] bAllowWorldCollision : BoolProperty
+    [ 19] bOverrideCollisionParams : BoolProperty
+    [ 20] CollisionChannelSettings : struct BodyInstance
+    [ 21] bIgnoreSelfComponent : BoolProperty
+    [ 22] IgnoreBones : TArray<struct BoneReference>
+    [ 23] IgnoreBoneNamePrefix : TArray<NameProperty>
+    [ 24] KawaiiPhysicsTag : struct GameplayTag
+    [ 25] DeltaTime : FloatProperty
+    [ 26] RootBone : struct BoneReference
+    [ 27] ExcludeBones : TArray<struct BoneReference>
+    [ 28] bRootBoneSimulate : BoolProperty
+    [ 29] bShouldFixTailBone : BoolProperty
+    [ 30] FixedBone : struct BoneReference
+    [ 31] FollowBone : struct BoneReference
+    [ 32] AdditionalRootBones : TArray<struct KawaiiPhysicsRootBoneSetting>
+    [ 33] DummyBoneLength : FloatProperty
+    [ 34] BoneForwardAxis : enum EBoneForwardAxis (as byte)
+    [ 35] PhysicsSettings : struct KawaiiPhysicsSettings
+    [ 36] CustomShapes : TArray<struct BoneShape>
+    [ 37] bUseCurve : BoolProperty
+    [ 38] PhysicsParamsPerBone : TArray<struct BonePhysicsParams>
+    [ 39] TeleportDistanceThreshold : FloatProperty
+    [ 40] TeleportRotationThreshold : FloatProperty
+    [ 41] PlanarConstraint : enum EPlanarConstraint (as byte)
+    [ 42] DampingCurve : UObject*
+    [ 43] WorldDampingLocationCurve : UObject*
+    [ 44] WorldDampingRotationCurve : UObject*
+    [ 45] StiffnessCurve : UObject*
+    [ 46] RadiusCurve : UObject*
+    [ 47] LimitAngleCurve : UObject*
+    [ 48] DampingCurveData : struct RuntimeFloatCurve
+    [ 49] StiffnessCurveData : struct RuntimeFloatCurve
+    [ 50] WorldDampingLocationCurveData : struct RuntimeFloatCurve
+    [ 51] WorldDampingRotationCurveData : struct RuntimeFloatCurve
+    [ 52] RadiusCurveData : struct RuntimeFloatCurve
+    [ 53] LimitAngleCurveData : struct RuntimeFloatCurve
+    [ 54] LimitLinearCurveData : struct RuntimeFloatCurve
+    [ 55] GravityCurveData : struct RuntimeFloatCurve
+    [ 56] BoneConstraintGlobalComplianceType : enum EXPBDComplianceType (as byte)
+    [ 57] BoneConstraintIterationCountBeforeCollision : IntProperty
+    [ 58] BoneConstraintIterationCountAfterCollision : IntProperty
+    [ 59] bAutoAddChildDummyBoneConstraint : BoolProperty
+    [ 60] BoneConstraints : TArray<struct ModifyBoneConstraint>
+    [ 61] BoneConstraintsDataAsset : UObject*
+    [ 62] BoneConstraintsData : TArray<struct ModifyBoneConstraint>
+    [ 63] Gravity : struct Vector
+    [ 64] bEnableWind : BoolProperty
+    [ 65] WindScale : FloatProperty
+    [ 66] bEnableWaveAnim : BoolProperty
+    [ 67] WaveBeginBone : struct BoneReference
+    [ 68] WaveFrequncy : FloatProperty
+    [ 69] WaveNum : FloatProperty
+    [ 70] WaveDirection : struct Vector
+    [ 71] WaveAmplitude : FloatProperty
+    [ 72] WaveAmplitudeCurveData : struct RuntimeFloatCurve
+    [ 73] ExternalForces : TArray<struct InstancedStruct>
+    [ 74] CustomExternalForces : TArray<UObject*>
+    [ 75] ParentSkelComp : UObject*
+    [ 76] PreSkelCompTransform : struct Transform
+    [ 77] bInitPhysicsSettings : BoolProperty
+
+struct SingleNodeParameter : <none>   (own properties: 15)
+    [  0] RootBone : struct BoneReference
+    [  1] ExcludeBones : TArray<struct BoneReference>
+    [  2] bRootBoneSimulate : BoolProperty
+    [  3] bShouldFixTailBone : BoolProperty
+    [  4] FixedBone : struct BoneReference
+    [  5] FollowBone : struct BoneReference
+    [  6] AdditionalRootBones : TArray<struct KawaiiPhysicsRootBoneSetting>
+    [  7] DummyBoneLength : FloatProperty
+    [  8] BoneForwardAxis : enum EBoneForwardAxis (as byte)
+    [  9] PhysicsSettings : struct KawaiiPhysicsSettings
+    [ 10] CustomShapes : TArray<struct BoneShape>
+    [ 11] ModifyBones : TArray<struct KawaiiPhysicsModifyBone>
+    [ 12] TotalBoneLength : FloatProperty
+    [ 13] AutoConfiguredLODThreshold : IntProperty
+    [ 14] CachedOwnerNetRole : enum ENetRole (as byte)
+
+struct AnimNode_KawaiiPhysicsMerge : AnimNode_SkeletalControlBase   (own properties: 52)
+    [  0] Nodes : TArray<struct SingleNodeParameter>
+    [  1] TeleportDistanceThreshold : FloatProperty
+    [  2] TeleportRotationThreshold : FloatProperty
+    [  3] TargetFramerate : IntProperty
+    [  4] OverrideTargetFramerate : BoolProperty
+    [  5] WarmUpFrames : IntProperty
+    [  6] bUseWarmUpWhenResetDynamics : BoolProperty
+    [  7] bNeedWarmUp : BoolProperty
+    [  8] PlanarConstraint : enum EPlanarConstraint (as byte)
+    [  9] bUpdatePhysicsSettingsInGame : BoolProperty
+    [ 10] ResetBoneTransformWhenBoneNotFound : BoolProperty
+    [ 11] DampingCurveData : struct RuntimeFloatCurve
+    [ 12] StiffnessCurveData : struct RuntimeFloatCurve
+    [ 13] WorldDampingLocationCurveData : struct RuntimeFloatCurve
+    [ 14] WorldDampingRotationCurveData : struct RuntimeFloatCurve
+    [ 15] RadiusCurveData : struct RuntimeFloatCurve
+    [ 16] LimitAngleCurveData : struct RuntimeFloatCurve
+    [ 17] LimitLinearCurveData : struct RuntimeFloatCurve
+    [ 18] GravityCurveData : struct RuntimeFloatCurve
+    [ 19] SphericalLimits : TArray<struct SphericalLimit>
+    [ 20] CapsuleLimits : TArray<struct CapsuleLimit>
+    [ 21] BoxLimits : TArray<struct BoxLimit>
+    [ 22] PlanarLimits : TArray<struct PlanarLimit>
+    [ 23] LimitsDataAsset : UObject*
+    [ 24] PhysicsAssetForLimits : UObject*
+    [ 25] SphericalLimitsData : TArray<struct SphericalLimit>
+    [ 26] CapsuleLimitsData : TArray<struct CapsuleLimit>
+    [ 27] BoxLimitsData : TArray<struct BoxLimit>
+    [ 28] PlanarLimitsData : TArray<struct PlanarLimit>
+    [ 29] BoneConstraintGlobalComplianceType : enum EXPBDComplianceType (as byte)
+    [ 30] BoneConstraintIterationCountBeforeCollision : IntProperty
+    [ 31] BoneConstraintIterationCountAfterCollision : IntProperty
+    [ 32] bAutoAddChildDummyBoneConstraint : BoolProperty
+    [ 33] BoneConstraints : TArray<struct ModifyBoneConstraint>
+    [ 34] BoneConstraintsDataAsset : UObject*
+    [ 35] BoneConstraintsData : TArray<struct ModifyBoneConstraint>
+    [ 36] MergedBoneConstraints : TArray<struct ModifyBoneConstraint>
+    [ 37] Gravity : struct Vector
+    [ 38] bEnableWind : BoolProperty
+    [ 39] WindScale : FloatProperty
+    [ 40] ExternalForces : TArray<struct InstancedStruct>
+    [ 41] CustomExternalForces : TArray<UObject*>
+    [ 42] bAllowWorldCollision : BoolProperty
+    [ 43] bOverrideCollisionParams : BoolProperty
+    [ 44] CollisionChannelSettings : struct BodyInstance
+    [ 45] bIgnoreSelfComponent : BoolProperty
+    [ 46] IgnoreBones : TArray<struct BoneReference>
+    [ 47] IgnoreBoneNamePrefix : TArray<NameProperty>
+    [ 48] KawaiiPhysicsTag : struct GameplayTag
+    [ 49] DeltaTime : FloatProperty
+    [ 50] PreSkelCompTransform : struct Transform
+    [ 51] bInitPhysicsSettings : BoolProperty
+
+struct ModifyBoneConstraintData : <none>   (own properties: 6)
+    [  0] BoneName1 : NameProperty
+    [  1] BoneName2 : NameProperty
+    [  2] BoneReference1 : struct BoneReference
+    [  3] BoneReference2 : struct BoneReference
+    [  4] bOverrideCompliance : BoolProperty
+    [  5] ComplianceType : enum EXPBDComplianceType (as byte)
+
+struct RegexPatternBoneSet : <none>   (own properties: 2)
+    [  0] RegexPatternBone1 : StrProperty
+    [  1] RegexPatternBone2 : StrProperty
+
+struct KawaiiPhysics_ExternalForce : <none>   (own properties: 12)
+    [  0] bIsEnabled : BoolProperty
+    [  1] bDrawDebug : BoolProperty
+    [  2] ApplyBoneFilter : TArray<struct BoneReference>
+    [  3] IgnoreBoneFilter : TArray<struct BoneReference>
+    [  4] ExternalForceSpace : enum EExternalForceSpace (as byte)
+    [  5] RandomForceScaleRange : struct FloatInterval
+    [  6] ExternalOwner : UObject*
+    [  7] bIsOneShot : BoolProperty
+    [  8] RandomizedForceScale : FloatProperty
+    [  9] Force : struct Vector
+    [ 10] ComponentTransform : struct Transform
+    [ 11] bCanSelectForceSpace : BoolProperty
+
+struct KawaiiPhysics_ExternalForce_Basic : KawaiiPhysics_ExternalForce   (own properties: 5)
+    [  0] ForceDir : struct Vector
+    [  1] ForceRateByBoneLengthRate : struct RuntimeFloatCurve
+    [  2] Interval : FloatProperty
+    [  3] Time : FloatProperty
+    [  4] PrevTime : FloatProperty
+
+struct KawaiiPhysics_ExternalForce_Gravity : KawaiiPhysics_ExternalForce   (own properties: 5)
+    [  0] ForceRateByBoneLengthRate : struct RuntimeFloatCurve
+    [  1] bUseCharacterGravityDirection : BoolProperty
+    [  2] bUseCharacterGravityScale : BoolProperty
+    [  3] OverrideGravityDirection : struct Vector
+    [  4] bUseOverrideGravityDirection : BoolProperty
+
+struct KawaiiPhysics_ExternalForce_Curve : KawaiiPhysics_ExternalForce   (own properties: 8)
+    [  0] ForceCurve : struct RuntimeVectorCurve
+    [  1] CurveEvaluateType : enum EExternalForceCurveEvaluateType (as byte)
+    [  2] SubstepCount : IntProperty
+    [  3] TimeScale : FloatProperty
+    [  4] ForceRateByBoneLengthRate : struct RuntimeFloatCurve
+    [  5] Time : FloatProperty
+    [  6] PrevTime : FloatProperty
+    [  7] MaxCurveTime : FloatProperty
+
+struct KawaiiPhysics_ExternalForce_Wind : KawaiiPhysics_ExternalForce   (own properties: 2)
+    [  0] ForceRateByBoneLengthRate : struct RuntimeFloatCurve
+    [  1] World : UObject*
+
+struct KawaiiPhysicsReference : AnimNodeReference   (own properties: 0)
+
+struct CollisionLimitDataBase : <none>   (own properties: 7)
+    [  0] DrivingBoneReference : struct BoneReference
+    [  1] DrivingBoneName : NameProperty
+    [  2] OffsetLocation : struct Vector
+    [  3] OffsetRotation : struct Rotator
+    [  4] Location : struct Vector
+    [  5] Rotation : struct Quat
+    [  6] Guid : struct Guid
+
+struct SphericalLimitData : CollisionLimitDataBase   (own properties: 2)
+    [  0] Radius : FloatProperty
+    [  1] LimitType : enum ESphericalLimitType (as byte)
+
+struct CapsuleLimitData : CollisionLimitDataBase   (own properties: 2)
+    [  0] Radius : FloatProperty
+    [  1] Length : FloatProperty
+
+struct BoxLimitData : CollisionLimitDataBase   (own properties: 1)
+    [  0] Extent : struct Vector
+
+struct PlanarLimitData : CollisionLimitDataBase   (own properties: 1)
+    [  0] Plane : struct Plane
+
+struct AnimNotifyState_KawaiiPhysicsAddExternalForce : AnimNotifyState   (own properties: 3)
+    [  0] AdditionalExternalForces : TArray<struct InstancedStruct>
+    [  1] FilterTags : struct GameplayTagContainer
+    [  2] bFilterExactMatch : BoolProperty
+
+struct AnimNotify_KawaiiPhysicsAddExternalForce : AnimNotify   (own properties: 3)
+    [  0] AdditionalExternalForces : TArray<struct InstancedStruct>
+    [  1] FilterTags : struct GameplayTagContainer
+    [  2] bFilterExactMatch : BoolProperty
+
+struct KawaiiPhysicsBoneConstraintsDataAsset : DataAsset   (own properties: 1)
+    [  0] BoneConstraintsData : TArray<struct ModifyBoneConstraintData>
+
+struct KawaiiPhysics_CustomExternalForce : Object   (own properties: 2)
+    [  0] bIsEnabled : BoolProperty
+    [  1] bDrawDebug : BoolProperty
+
+struct KawaiiPhysicsLibrary : BlueprintFunctionLibrary   (own properties: 0)
+
+struct KawaiiPhysicsLimitsDataAsset : DataAsset   (own properties: 4)
+    [  0] SphericalLimits : TArray<struct SphericalLimit>
+    [  1] CapsuleLimits : TArray<struct CapsuleLimit>
+    [  2] BoxLimits : TArray<struct BoxLimit>
+    [  3] PlanarLimits : TArray<struct PlanarLimit>
+

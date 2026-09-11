@@ -1,0 +1,36 @@
+{
+    "FileVersion": 3,
+    "Version": 1180,
+    "VersionName": "1.18.0-marvel-s9.5",
+    "FriendlyName": "Kawaii Physics (Rivals schema)",
+    "Description": "Kawaii Physics rebuilt to match the reflected schema of the shipped game's KawaiiPhysics module (UE 5.3.2). Based on pafuhana1213/KawaiiPhysics v1.18.0.",
+    "Category": "Animation",
+    "CreatedBy": "pafuhana1213; Rivals schema port by XzantGaming",
+    "CreatedByURL": "https://github.com/XzantGaming/KawaiiPhysicsRivals",
+    "DocsURL": "https://github.com/XzantGaming/KawaiiPhysicsRivals#readme",
+    "MarketplaceURL": "https://github.com/XzantGaming/KawaiiPhysicsRivals",
+    "SupportURL": "https://github.com/XzantGaming/KawaiiPhysicsRivals/issues",
+    "EngineVersion": "5.3.0",
+    "CanContainContent": false,
+    "IsBetaVersion": false,
+    "IsExperimentalVersion": false,
+    "Installed": false,
+    "Modules": [
+        {
+            "Name": "KawaiiPhysics",
+            "Type": "Runtime",
+            "LoadingPhase": "PostConfigInit"
+        },
+        {
+            "Name": "KawaiiPhysicsEd",
+            "Type": "UncookedOnly",
+            "LoadingPhase": "PreDefault"
+        }
+    ],
+    "Plugins": [
+        {
+            "Name": "StructUtils",
+            "Enabled": true
+        }
+    ]
+}

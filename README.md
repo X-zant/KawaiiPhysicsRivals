@@ -1,156 +1,266 @@
-# Kawaii Physics
+# KawaiiPhysics, rebuilt against the game's schema
 
-![UE Version](https://img.shields.io/badge/Unreal%20Engine-5.3--5.7-0e1128?logo=unrealengine&logoColor=white)
-[![GitHub release (latest by tag)](https://img.shields.io/github/v/release/pafuhana1213/KawaiiPhysics)](https://github.com/pafuhana1213/KawaiiPhysics/releases)
-[![Downloads](https://img.shields.io/github/downloads/pafuhana1213/KawaiiPhysics/total)](https://github.com/pafuhana1213/KawaiiPhysics/releases)
-[![Discussions](https://img.shields.io/github/discussions/pafuhana1213/KawaiiPhysics?logo=github)](https://github.com/pafuhana1213/KawaiiPhysics/discussions)
-[![GitHub contributors](https://img.shields.io/github/contributors/pafuhana1213/KawaiiPhysics?logo=github)](https://github.com/pafuhana1213/KawaiiPhysics/graphs/contributors)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/pafuhana1213/KawaiiPhysics)
-[![X (formerly Twitter) Follow](https://img.shields.io/twitter/follow/pafuhana1213?style=social)](https://twitter.com/pafuhana1213)
+A UE 5.3.2 build of Kawaii Physics whose reflected types match, exactly, the
+`KawaiiPhysics` module in the shipped game (`5.3.2-3761137+++depot_marvel+S9.5_release-Marvel`).
 
-[English README](https://github.com/pafuhana1213/KawaiiPhysics/blob/master/README_en.md)
+Based on upstream [pafuhana1213/KawaiiPhysics](https://github.com/pafuhana1213/KawaiiPhysics)
+**v1.18.0** (MIT), which is the version the game's fork derives from.
 
 ---
 
-Kawaii Physicsは、Unreal Engine向けのシンプルな疑似物理プラグインです。  
-髪、スカート、胸などの揺れものを「かんたんに」「かわいく」揺らすことができます。
+## Install
 
-<a href="https://youtu.be/0f-l-SP07Mo">
-  <img src="https://github.com/user-attachments/assets/0bc33f5c-c7db-49b3-8e98-75dc062a4e2a" alt="Demo Video" width="640px">
-</a>
+Drop this folder into `<YourProject>/Plugins/` and open the project. That is the whole install.
 
-[デモ動画 (Demo Video)](https://youtu.be/0f-l-SP07Mo)
+Precompiled `Win64` editor binaries for **UE 5.3.2** are included, so a Blueprint-only project
+needs no compiler. They are built against engine `BuildId 27405482`; if your engine reports a
+different one, delete `Binaries/` and let your project rebuild the plugin from `Source/`.
 
-## 🖼️ ギャラリー (Gallery)
-
-<img src="https://github.com/user-attachments/assets/fda69859-b60f-4fde-a683-62da3e2839e4" alt="compare" width="640px">
-
-*キャラクター：[Grayちゃん](http://rarihoma.xvs.jp/products/graychan)*
-
-<img src="https://github.com/user-attachments/assets/28d72d0c-4423-41c7-bc52-c5c7c3886e02" alt="dance5" width="640px">
-
-*キャラクター：[オリジナル3Dモデル『ルゼブル』-Lzebul-](https://booth.pm/ja/items/4887691) / モーション：[ミライ小町](https://www.miraikomachi.com/download/)*
-
-<img src="https://github.com/user-attachments/assets/63faed3c-8aaa-4d4d-ae33-e98f9c8c15fd" alt="danceKano" width="640px">
-
-*キャラクター：[TA式 鷺宮カノ](https://uzurig.com/ja/uzurig2-rigging-plugin-for-maya-jp/) / モーション：[しかのこのこのここしたんたん](https://booth.pm/ja/items/5975857) / セットアップ：[株式会社TA様](https://xta.co.jp/)*
-
-## ✨ 特徴 (Features)
-
-<table>
-  <tr>
-    <td><img src="https://github.com/pafuhana1213/Screenshot/blob/master/KawaiiPhysics2.jpg?raw=true" width="320"></td>
-    <td><img src="https://github.com/pafuhana1213/Screenshot/blob/master/KawaiiPhysics4.gif?raw=true" width="320"></td>
-  </tr>
-</table>
-
-- アニメーションやキャラクターの動きに基づいた物理制御
-- AnimGraph内の`KawaiiPhysics`ノード一つで簡単にセットアップ
-- 球・カプセル・平面のコリジョンに対応し、ビューポートで直感的に調整可能
-- 計算が破綻してもスケルトンが伸び縮みしない安定性
-- PhysX非依存の軽量なアルゴリズム
-- 風や重力だけでなく、演出目的の外力も適用可能
-- `DataAsset`や`PhysicsAsset`を使ったパラメータの保存・共有が可能
-
-### 参考資料
-物理挙動を実装するにあたって、以下の資料を参考にしました。
-- [次期アイドルマスター グラフィクス＆アニメーション プログラミング プレビュー](https://cedil.cesa.or.jp/cedil_sessions/view/416)
-
-## 🚀 導入方法 (Getting Started)
-
-### 1. ダウンロード
-
-C++ビルド環境がない方は、以下のリンクからプラグインをダウンロードしてください。
-- **[GitHub Releases](https://github.com/pafuhana1213/KawaiiPhysics/releases/)**
-- **[FAB](https://www.fab.com/ja/listings/f870c07e-0a02-4a78-a888-e52a22794572)** (内容はGitHub版と同じです）
-- **[Booth](https://pafuhana1213.booth.pm/items/5943534)** (ストアをフォローすると更新通知が届きます)
-
-### 2. 対応バージョン
-
-- **UE 5.3 ~ 5.7**
-- UE4.27: [v1.11.1](https://github.com/pafuhana1213/KawaiiPhysics/releases/tag/20230830-v1.11.1)
-
-### 3. インストール
-
-1. プロジェクトのルートに `Plugins` フォルダを作成します。
-2. ダウンロードした `KawaiiPhysics` フォルダを `Plugins` フォルダにコピーします。
-
-### 4. 使い方
-
-- Animation BlueprintのAnimGraphで `KawaiiPhysics` ノードを追加して利用します。
-- 詳細なパラメータ設定については、Wikiを参照してください。
-  - **[各パラメータについて](https://github.com/pafuhana1213/KawaiiPhysics/wiki/%E5%90%84%E3%83%91%E3%83%A9%E3%83%A1%E3%83%BC%E3%82%BF%E3%81%AB%E3%81%A4%E3%81%84%E3%81%A6--About-each-parameters)**
-
-> **Note:** Blueprintのみのプロジェクトでパッケージ化する際にエラーが出る場合があります。その際は、C++プロジェクトに変換するか、[こちらの記事](https://papersloth.hatenablog.com/entry/2024/02/14/201629)を参考にしてください。
-
-## 📚 ドキュメント & コミュニティ
-
-- **[Wiki](https://github.com/pafuhana1213/KawaiiPhysics/wiki)**: 公式ドキュメント（整備中）
-- **[DeepWiki](https://deepwiki.com/pafuhana1213/KawaiiPhysics)**: AIによる自動生成ドキュメント
-- **[Discussions](https://github.com/pafuhana1213/KawaiiPhysics/discussions)**: 質問、要望、雑談などはこちらへ
-- **[Issues](https://github.com/pafuhana1213/KawaiiPhysics/issues)**: 不具合報告
-
-## 🎓 解説記事 & 動画 (Tutorials)
-
-### 公式
-
-- [揺れ骨用自作AnimNode「Kawaii Physics」の内部実装解説的なもの その1](http.pafuhana1213.hatenablog.com/entry/2019/07/26/171046)
-- [#ControlRig を使ったスカートの突き抜け対策と#KawaiiPhysics を併用してみるテスト](https://twitter.com/pafuhana1213/status/1300454762542817280)
-
-### 非公式 (ありがとうございます！)
-
-- [揺れモノ超ド素人がKawaiiPhysicsを使って、感覚を頼りに女性キャラクターモデルのKawaiiを増す方法まとめ](https://qiita.com/YuukiOgino/items/7f3198a90dab43019f26)
-- [揺れものとコントロールリグ UEを使用したバーチャルライブでの実例](https://www.docswell.com/s/indieusgames/K4Q2XJ-2024-06-14-175045)
-- [【UE】揺れ物設定（Kawaii Physics）](https://techblog.sumelagi.co.jp/unrealengine/147/)
-- [【UE4】Kawaii Physicsチュートリアル#1](https://www.youtube.com/watch?v=hlgXuVML_is)
-- [How To Setup Kawaii Physics in Unreal Engine 5](https://dev.epicgames.com/community/learning/tutorials/d1Z9/unreal-engine-how-to-setup-kawaii-physics-in-unreal)
-- [５分でわかるKawaii Physicsの使い方！【UE5】【tutorial】](https://www.youtube.com/watch?v=TliP9vSxm4c)
-- [The Hidden Physics “Engine” Behind Unreal's Most Stylish Games ...](https://www.youtube.com/watch?v=9ThmoMHnHhw)
-
-## 🎮 サンプル (Sample)
-
-<img src="https://github.com/user-attachments/assets/0d866ad2-f803-400b-bd23-2d46ab17b8ae" alt="sample2" width="640px">
-
-プロジェクト内にサンプルレベルとキャラクターが含まれています。
-- **サンプルレベル**: `Content/KawaiiPhysicsSample/L_KawaiiPhysicsSample`
-- **使用キャラクター**:
-  - **Grayちゃん**: http://rarihoma.xvs.jp/products/graychan
-  - **TA式 鷺宮カノ**: [株式会社TA様](https://xta.co.jp/)よりご提供
-    - Copyright (c) 2025 株式会社TA All rights reserved
-    - 利用規約：https://uzurig.com/ja/terms_of_use_jp/
-
-## 🌟 採用実績 (Showcase)
-
-多くのプロジェクトで採用されています！
-- **[採用実績一覧](https://github.com/pafuhana1213/KawaiiPhysics/wiki/%E6%8E%A1%E7%94%A8%E5%AE%9F%E7%B8%BE-Adoption)**
-- あなたの作品もぜひ [こちら](https://github.com/pafuhana1213/KawaiiPhysics/discussions/65) で教えてください！
-- Twitter/Xで作品を共有する際は、ぜひハッシュタグ **[#KawaiiPhysics](https://twitter.com/search?q=%23kawaiiphysics&src=typed_query&f=live)** をお使いください！
-
-## 関連ツール(Related tools)
-- [VRM SpringBoneをKawaiiPhysicsに変換するツール](https://yumetengu.booth.pm/items/7943387)
-
-## 📜 ライセンス (License)
-
-[MIT License](https://github.com/pafuhana1213/KawaiiPhysics/blob/master/LICENSE)
-
-## 👨‍💻 作者 (Author)
-
-[おかず @pafuhana1213](https://twitter.com/pafuhana1213)
-
-## 📅 更新履歴 (Changelog)
-
-[Announcements - アナウンス](https://github.com/pafuhana1213/KawaiiPhysics/discussions/categories/announcements-%E3%82%A2%E3%83%8A%E3%82%A6%E3%83%B3%E3%82%B9)
+> **Using it with [RivalsNotifyCommunityKit](https://github.com/XzantGaming/RivalsNotifyCommunityKit)?**
+> Just drop both into `Plugins/`. That kit declares this plugin as a required dependency and
+> ships no `KawaiiPhysics` module of its own, so there is nothing to reconcile — the two anim
+> notify classes it needs (`UAnimNotify_KawaiiPhysicsAddExternalForce` and its NotifyState
+> counterpart) come from here.
 
 ---
 
-## ✨ よろしければご支援を！
+## 1. What "compatible" means here, precisely
 
-このプラグインが、皆さんのUEプロジェクトに少しでも役立っていれば、とても嬉しいです。
+The game cooks with **unversioned property serialization**. Under that scheme a
+property is identified purely by its **index in the owning struct's schema**, and
+that index is its **declaration order in C++**. There are no names in the cooked
+bytes to fall back on.
 
-開発は私個人が趣味と実益を兼ねて、開発時間の確保やコーヒー代を自腹でやりくりしながら進めています☕  
-もし「なかなか良いじゃん！」と思っていただけたら、FABでの購入やGitHub Sponsorsで応援していただけると、  
-開発を続ける上で大きな励みになります（[FABでの販売を開始に関して詳細な経緯はこちら](https://github.com/pafuhana1213/KawaiiPhysics/discussions/170)）。  
+So compatibility is not "has the same fields somewhere". It is:
 
-[💖**FABで購入する**](https://www.fab.com/ja/listings/f870c07e-0a02-4a78-a888-e52a22794572)  
-[💖 **GitHub Sponsorsで応援する**](https://github.com/sponsors/pafuhana1213)
+- every `UENUM` / `USTRUCT` / `UCLASS` present, under the same name;
+- every property present, same name, same type, **same position**;
+- same inheritance, since a super's properties occupy the leading indices.
+
+**Why this matters:** get one property out of position and every property after
+it silently shifts. Assets still load. They load *wrong* — a float lands where a
+bool was — and it does not fail loudly.
+
+Every `UPROPERTY` in `AnimNode_KawaiiPhysics.h` carries its schema index in a comment
+(`[0]`, `[1]`, …) for exactly this reason. **Declaration order is load-bearing. Do not
+reorder members.**
+
+## 2. Ground truth, and how it was established
+
+| Source | Used for |
+|---|---|
+| the game's `*.usmap` mappings | the authoritative schema: names, types, order |
+| Dumper-7 `CppSDK` headers | memory offsets and property flags |
+| upstream v1.18.0 | the code being ported |
+
+Two facts had to be settled before a single header could be written, and both
+were settled against the game's own data rather than assumed:
+
+**Declaration order is the schema order.** The usmap's property indices were
+compared against the Dumper-7 SDK's memory offsets across every type in the
+package. They agree, monotonically, everywhere.
+
+**UHT strips the `_DEPRECATED` suffix.** The game's node carries 49 deprecated
+properties reflected under bare names (`RootBone`, `ExcludeBones`, …) with
+`CPF_Deprecated` set. Scanning all 31,996 types in the usmap finds **zero**
+properties whose reflected name ends in `_DEPRECATED`, and stock UE's
+`USkinnedMeshComponent::SkeletalMesh_DEPRECATED` appears as plain `SkeletalMesh`.
+So declaring `FBoneReference RootBone_DEPRECATED;` yields exactly what the game
+has: name `RootBone`, deprecated flag set, never written back on save.
+
+Corollary the plugin obeys throughout: `WITH_EDITORONLY_DATA` and `ENABLE_ANIM_DEBUG`
+properties are compiled out of the shipped game, so they must be declared **after**
+all runtime properties of their struct.
+
+`Docs/game-kawaii-schema.txt` is the extracted reference schema.
+
+## 3. How the game's fork differs from upstream
+
+The headline change is a **multi-chain refactor**. Upstream carries one chain's
+settings flat on the node; the fork holds `TArray<FKawaiiPhysicsChain> Chains`
+and runs the solver per entry. The old flat properties survive as the deprecated
+block, and `UpgradeDeprecatedProperties()` folds them into `Chains[0]` on load.
+
+Fork-only features reproduced here:
+
+| Feature | Where |
+|---|---|
+| Multi-chain (`Chains`) | `FKawaiiPhysicsChain` |
+| Merge node (shared limits/constraints across chains) | `FAnimNode_KawaiiPhysicsMerge` |
+| Wave animation | `FWaveAnimSettings` |
+| Per-bone custom colliders | `FBoneShape`, `EBoneShapeType` |
+| `SpringStiffness` | `FBonePhysicsParams` |
+| Relative-rotation limits (6 half-axes) | `FBonePhysicsParams` |
+| `LimitLinear`, `GravityScale` | `FKawaiiPhysicsSettings` |
+| `CapsuleBone` collision type | `ECollisionLimitType` |
+| Parent-component-driven limits, collision slots | `bUseParentCompBone`, `ParentDrivingBoneName`, `SlotID` |
+| Fixed / follow bones, tail pinning | `FBoneSettings` |
+| Per-chain LOD threshold, cached net role | `FKawaiiPhysicsChain` |
+| `ChainIndex` on every per-chain Blueprint accessor | `UKawaiiPhysicsLibrary` |
+
+---
+
+## 4. Importing setups from the shipped game
+
+Export a cooked `Post_<SkinID>_<CharID>_Physics` with FModel, then use either route.
+
+### Drag the `.json` into the Content Browser
+
+The whole graph is converted and placed on your clipboard as UE node text (T3D).
+Open any AnimGraph and **Ctrl+V**. No asset is created — where the nodes belong is
+your choice, not a guess this plugin should make.
+
+This needs no skeleton, so it works before you have extracted the mesh.
+
+### Right-click an Anim Blueprint → *Import Kawaii Physics from JSON…*
+
+Same conversion, but the nodes go straight into that Blueprint's AnimGraph.
+
+### How to export from FModel
+
+Locate e.g. `Marvel/Content/Marvel/Characters/1014/1014001/Post_1014001_Physics` and save
+the whole **package** as JSON — not a single object. The importer needs the
+`AnimBlueprintGeneratedClass` (which declares the nodes) *and* the `Default__…`
+object (which holds their values).
+
+### What comes across
+
+All of it. Every property the game's Kawaii Physics types declare lands on the matching
+`UPROPERTY`, because of §1 — FModel writes property names and nothing has to translate
+or guess.
+
+`FInstancedStruct` is the one case needing real work: FModel emits external-force presets
+as flat objects with **no type tag**, and `FInstancedStruct` has no reflected properties
+of its own. The concrete type is inferred from the fields present (`ForceCurve` → Curve,
+`OverrideGravityDirection` → Gravity, `ForceRateByBoneLengthRate` → Wind, …) and the
+struct is initialised as that type.
+
+`UKawaiiPhysicsJsonImporter::AuditJsonCoverage` walks every field in an export and reports
+anything with no matching property, so "did all of it come across?" is a measurement
+rather than a belief.
+
+**Graph wiring** is recovered from each node's `ComponentPose.LinkID`, an index into the
+generated class's anim-node properties in declaration order, counting only `AnimGraphNode_*`
+entries.
+
+### Referenced assets are stubbed, not dropped
+
+`LimitsDataAsset`, `PhysicsAssetForLimits`, `BoneConstraintsDataAsset` and Pose Driver
+pose assets point at cooked game assets that are not in your project. An empty placeholder
+of the right class is created **at the game's own package path** and saved to disk, so the
+reference serializes correctly; the packaged game resolves it against its own paks at
+runtime. The contents are irrelevant — only the path, name and class matter.
+
+> **Exclude placeholders when you pack.** Shipping a stub at the same path as the game's
+> real asset overrides it with an empty one. Every placeholder is listed by path in the
+> import result and the completion dialog.
+
+### Which nodes it recreates
+
+Node types are read from the export, not guessed: the generated class names the exact
+struct behind every node property. Handled: `AnimNode_KawaiiPhysics`,
+`AnimNode_KawaiiPhysicsMerge`, and `AnimNode_PoseDriver`.
+
+A physics AnimBlueprint usually contains stock engine nodes too — pose-space conversions,
+`LinkedInputPose`, `Root`, sometimes `LayeredBoneBlend` or Constraint nodes. Those are stock
+UE, work in a stock 5.3.2 editor already, and are not this plugin's to recreate. Anything
+skipped is **named** in the result (`SkippedNodeTypes`) and in the dialog, so a partial
+graph is never silent.
+
+### What it deliberately does not do
+
+- **Does not connect the chain to your graph.** The head and tail pins are left open. The
+  game feeds these through LinkedInputPose → LocalToComponentSpace and back out; how your
+  Blueprint should do that is your call.
+- **Does not import `ModifyBones`.** That is runtime state, rebuilt from the skeleton on
+  first evaluation.
+
+Covered by an automation test whose fixture mirrors real FModel output:
+
+```
+UnrealEditor-Cmd.exe <YourProject>.uproject -ExecCmds="Automation RunTests KawaiiPhysics.JsonImporter.ParseNode; Quit" -unattended -nopause -nosplash -nullrhi
+```
+
+---
+
+## 5. Building from source
+
+Drop into `<YourProject>/Plugins/` and build normally. Verified against UE 5.3.2 (CL 29314046):
+clean from-scratch build, **zero errors and zero warnings**. UHT accepts all headers with
+`-WarningsAsErrors`.
+
+### If your build dies in `ConcurrentLinearAllocator.h`
+
+A toolchain mismatch, not a plugin bug. UE 5.3's preferred MSVC toolsets top out around
+**14.38**; VS 17.14 installs **14.44**. `Platform.h` sets `PLATFORM_HAS_ASAN_INCLUDE` from
+`__has_include(<sanitizer/asan_interface.h>)`. Newer MSVC *ships* that header, so the macro
+flips on for the first time and exposes `#elif __has_feature(address_sanitizer)` — a
+Clang-only builtin. Under MSVC that gives C4668, which UE escalates via `/we4668`. It breaks
+`SharedPCH.Engine`/`SharedPCH.UnrealEd`, so no per-module setting can reach it.
+
+**Proper fix:** install MSVC v14.38 ("MSVC v143 — VS 2022 C++ x64/x86 build tools
+(v14.38-17.8)" in the VS Build Tools installer).
+
+**Workaround:** add `-Define:PLATFORM_HAS_ASAN_INCLUDE=0` to the UBT command line. That
+restores exactly the state the prebuilt engine binaries were compiled in — with ASan off,
+both branches no-op identically. Nothing in the plugin depends on it either way.
+
+---
+
+## 6. Status — read this before relying on it
+
+**Schema: exact and verified.** 48/48 types, every property name, type and index,
+machine-checked against the game's usmap in both directions (a deleted type is a failure,
+not a silent pass). This is the part that determines whether assets round-trip.
+
+**Compiles clean against stock UE 5.3.2**, and both modules load in a real Blueprint-only
+project. JSON import is verified end-to-end there.
+
+**JSON import is tested.** The automation test covers enum-qualifier rewriting, the
+fork-only limit fields, stripped runtime state, external-force type inference, and
+unresolved references.
+
+**The simulation has never been run.** No chain has been evaluated in the editor or in
+game. Treat runtime behaviour as untested.
+
+**Simulation behaviour is a faithful port, not a bit-exact reproduction.** The solver —
+Verlet-style integration, framerate-corrected damping/stiffness, cone and linear limits,
+sphere/capsule/box/plane collision, XPBD distance constraints — is ported from upstream and
+is correct in kind. The fork-only features (wave animation, spring stiffness,
+relative-rotation limits, follow bones) are implemented from their schema and names;
+NetEase's exact formulas are not observable from a data dump, so numbers will differ.
+
+For asset work this rarely matters: **mods ship cooked assets, and the game runs its own
+compiled KawaiiPhysics.** The plugin's job is to make the editor read and write the right
+bytes. Editor preview fidelity is a convenience.
+
+**Known gaps, deliberate:**
+
+- `FAnimNode_KawaiiPhysicsMerge` serializes `ExternalForces` / `CustomExternalForces`
+  (they are in the schema) but does not evaluate them; its own `Gravity` and `Wind` are
+  applied. The force virtuals are declared against `FAnimNode_KawaiiPhysics` and a chain,
+  which the Merge node does not have. The AnimGraph node emits a compile note rather than
+  failing quietly.
+- `ECollisionLimitType::CapsuleBone` is in the enum and serializes correctly, but no
+  bone-driven capsule collision path is implemented — authored capsules work.
+- `FBoneShape` / `CustomShapes` serialize; they are not yet fed into collision.
+- Legacy `UCurveFloat` references on pre-refactor nodes are not auto-migrated to inline
+  curves; the node logs a warning naming the problem.
+- `AnimNode_LayeredBoneBlend` is not recreated on import (it needs multi-pose-input link
+  restoration). Kawaii nodes in such a graph still convert; the blend node is reported as
+  skipped.
+- Inside `CollisionChannelSettings`, a few `FBodyInstance` fields the game extends
+  (`AccelerationStructureType`, `PenetrationDepth`, `GameTraceChannel19`–`23`, …) have no
+  stock-engine counterpart and do not import. No observed export sets
+  `bOverrideCollisionParams`, so this is currently inert.
+
+---
+
+## 7. Licence
+
+Upstream Kawaii Physics is MIT, © 2019-2026 pafuhana1213 — see `LICENSE`. Ported files keep
+that notice, and the changes in this port are released under the same licence.
+
+This port exists to interoperate with assets you already have. It contains **no game code,
+assets or content**; the schema it reproduces is a description of a data format, read from a
+public SDK dump.
