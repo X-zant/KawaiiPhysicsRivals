@@ -195,6 +195,17 @@ struct FCollisionLimitBase
 	UPROPERTY(VisibleAnywhere, Category = CollisionLimitBase)
 	ECollisionSourceType SourceType = ECollisionSourceType::AnimNode;
 
+	// --- runtime-only scratch; no schema index ---
+
+	/** The driving bone's component-space scale X this frame (game: limit +0x04). The main node's sphere, capsule
+	 *  and box collisions scale the limit by it; the Merge node's do not. */
+	float DrivingBoneScale = 1.0f;
+
+	/** For bUseParentCompBone: ParentDrivingBoneName's transform on the parent skeletal mesh, expressed in this
+	 *  component's space, cached on the game thread (PreUpdate). */
+	FTransform ParentBonePlacement = FTransform::Identity;
+	bool bParentBonePlacementValid = false;
+
 	// --- editor-only below this line; must stay last, see SCHEMA NOTE ---
 #if WITH_EDITORONLY_DATA
 
@@ -220,6 +231,9 @@ struct FCollisionLimitBase
 		Rotation = Other.Rotation;
 		bEnable = Other.bEnable;
 		SourceType = Other.SourceType;
+		DrivingBoneScale = Other.DrivingBoneScale;
+		ParentBonePlacement = Other.ParentBonePlacement;
+		bParentBonePlacementValid = Other.bParentBonePlacementValid;
 #if WITH_EDITORONLY_DATA
 		Guid = Other.Guid;
 		Type = Other.Type;
@@ -502,6 +516,20 @@ struct KAWAIIPHYSICS_API FKawaiiPhysicsModifyBone
 
 	/** Set when this bone's transform could not be resolved this frame. */
 	bool bBoneMissing = false;
+
+	/** Set by the relative-rotation limit this pass (game: bone +0x152); the parent's output rotation is then
+	 *  LimitedParentRotation (game: bone +0x160) instead of the usual derivation. */
+	bool bRotationLimited = false;
+	FQuat LimitedParentRotation = FQuat::Identity;
+
+	/** From the first capsule CustomShape driven by this bone (game: bone +0x44 = HalfHeight, and OffsetRotation).
+	 *  A positive half height makes capsule-limit collision treat the bone as a segment along the Z axis of
+	 *  ShapeRotation (= PoseRotation * OffsetRotation; game: bone +0x70). */
+	float ShapeHalfHeight = 0.0f;
+	FQuat ShapeRotation = FQuat::Identity;
+
+	/** The output keeps this bone's pose location this frame (its direction from the parent did not change). */
+	bool bKeepPoseLocation = false;
 
 	void UpdatePoseTransform(const FBoneContainer& BoneContainer, FCSPose<FCompactPose>& Pose,
 	                         bool ResetBoneTransformWhenBoneNotFound)
@@ -1002,7 +1030,7 @@ struct KAWAIIPHYSICS_API FKawaiiPhysicsChain
 	UPROPERTY(Transient)
 	float WaveBeginBoneLengthFromRoot = 0.0f;
 
-	/** [8] Skip this chain at or above this LOD. -1 means never skip. */
+	/** [8] Skip this chain above this LOD (it still runs AT this LOD). -1 means never skip. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Performance")
 	int32 AutoConfiguredLODThreshold = -1;
 
@@ -1012,18 +1040,37 @@ struct KAWAIIPHYSICS_API FKawaiiPhysicsChain
 
 	// --- runtime-only scratch; no schema index ---
 
-	/** Resolved index of BoneSettings::FollowBone within ModifyBones, or INDEX_NONE. */
-	int32 FollowBoneIndex = INDEX_NONE;
+	/** Component translation since the previous evaluation, in component space (game: chain +0x900). */
+	FVector SkelCompMoveVector = FVector::ZeroVector;
 
-	/** Wall time accumulated for the wave animation. */
-	float WaveTime = 0.0f;
+	/** Component rotation since the previous evaluation (game: chain +0x920). */
+	FQuat SkelCompMoveRotation = FQuat::Identity;
+
+	/** Where the fixed bone should sit, carried by the follow bone (game: chain +0x240): FixedRefRelToFollow times
+	 *  the follow bone's component-space pose. Updated only while a fixed bone has a follow bone. */
+	FTransform FollowTargetTransform = FTransform::Identity;
+
+	/** The fixed bone's reference pose relative to the follow bone's (game: chain +0x2A0). */
+	FTransform FixedRefRelToFollow = FTransform::Identity;
+
+	/** Copy of BoneSettings::FollowBone, resolved for this pose (game: chain +0x220). */
+	FBoneReference FollowBoneRef;
+
+	/** The skeleton parent of RootBone (game: chain +0x70), source of the virtual parent's pose. */
+	FBoneReference RootParentRef;
+
+	/** The parent a simulated root (bRootBoneSimulate) is solved against (game: chain +0x90). */
+	FKawaiiPhysicsModifyBone VirtualParentBone;
+	bool bHasVirtualParent = false;
 
 	/** Cleared whenever the chain's bone set has to be rebuilt. */
 	bool bInitialized = false;
 
+	/** The game's rule (EvaluateSkeletalControl 0x76749B0, SimulateModifyBones 0x767B9F0): a chain runs when its
+	 *  threshold is -1 or >= the current LOD. */
 	bool IsEnabledForLOD(int32 InLODLevel) const
 	{
-		return AutoConfiguredLODThreshold < 0 || InLODLevel < AutoConfiguredLODThreshold;
+		return AutoConfiguredLODThreshold == -1 || AutoConfiguredLODThreshold >= InLODLevel;
 	}
 };
 
@@ -1338,14 +1385,12 @@ protected:
 
 	// --- runtime-only scratch ---
 
-	/** Component translation since the previous frame, in component space. */
-	FVector SkelCompMoveVector = FVector::ZeroVector;
-
-	/** Component rotation since the previous frame. */
-	FQuat SkelCompMoveRotation = FQuat::Identity;
-
-	/** Delta time of the previous frame, for the variable-timestep correction. */
+	/** Delta time of the previous pass, for the variable-timestep correction (game: node +0xA84). */
 	float DeltaTimeOld = 0.0f;
+
+	/** The wave animation's clock (game: node +0xA90): 0 at construction, += DeltaTime after every simulate pass
+	 *  (warm-up passes included), never reset. Shared by every chain of the node. */
+	float WaveTime = 0.0f;
 
 	/** Set by ResetDynamics, consumed on the next evaluation. */
 	bool bResetDynamics = false;
@@ -1358,6 +1403,10 @@ protected:
 
 public:
 	FAnimNode_KawaiiPhysics();
+	/** Physics-asset bodies -> limits, shared with the Merge node (game 0x7671350 / 0x7671BE0). */
+	static void BuildPhysicsAssetLimits(const UPhysicsAsset* PhysicsAsset, const FBoneContainer& RequiredBones,
+	                                    TArray<FSphericalLimit>& SphericalLimitsData,
+	                                    TArray<FCapsuleLimit>& CapsuleLimitsData, TArray<FBoxLimit>& BoxLimitsData);
 
 	// FAnimNode_Base interface
 	virtual void UpdateInternal(const FAnimationUpdateContext& Context) override;
@@ -1438,7 +1487,8 @@ protected:
 	                    const TArray<FTransform>& RefBonePose);
 	void InitBoneConstraints(FKawaiiPhysicsChain& Chain);
 	void ApplyBoneConstraintDataAsset(FKawaiiPhysicsChain& Chain, const FBoneContainer& RequiredBones);
-	void MarkFixedAndFollowBones(FKawaiiPhysicsChain& Chain);
+	void MarkFixedAndFollowBones(FKawaiiPhysicsChain& Chain, const FReferenceSkeleton& RefSkeleton,
+	                             const FBoneContainer& BoneContainer);
 	void MarkWaveBones(FKawaiiPhysicsChain& Chain);
 
 	// --- shared limits ---
@@ -1458,12 +1508,21 @@ protected:
 	void UpdateModifyBonesPoseTransform(FKawaiiPhysicsChain& Chain, FComponentSpacePoseContext& Output,
 	                                    const FBoneContainer& BoneContainer);
 	void UpdateSkelCompMove(FKawaiiPhysicsChain& Chain, const FTransform& ComponentTransform);
+	/** One pass over every chain, then DeltaTimeOld = DeltaTime and WaveTime += DeltaTime (game 0x767E3DF).
+	 *  LODLevel < 0 runs every chain (the warm-up's LOD 0 pass). */
+	void SimulatePass(FComponentSpacePoseContext& Output, const FTransform& ComponentTransform, int32 LODLevel);
 	void SimulateModifyBones(FKawaiiPhysicsChain& Chain, FComponentSpacePoseContext& Output,
 	                         const FTransform& ComponentTransform);
 	void Simulate(FKawaiiPhysicsChain& Chain, FKawaiiPhysicsModifyBone& Bone, const FSceneInterface* Scene,
 	              const FTransform& ComponentTransform, const FVector& GravityCS, const float& Exponent,
-	              const USkeletalMeshComponent* SkelComp, FComponentSpacePoseContext& Output);
-	void ApplyWaveAnim(FKawaiiPhysicsChain& Chain, FKawaiiPhysicsModifyBone& Bone);
+	              const USkeletalMeshComponent* SkelComp, FComponentSpacePoseContext& Output, bool bHasFixed);
+	/** The bone's parent in the solve: its chain parent, or the chain's virtual parent for a simulated root. */
+	static const FKawaiiPhysicsModifyBone* GetSimParent(const FKawaiiPhysicsChain& Chain,
+	                                                    const FKawaiiPhysicsModifyBone& Bone);
+	void FixTailStiffness(FKawaiiPhysicsChain& Chain, float Exponent);
+	void FixTailLengths(FKawaiiPhysicsChain& Chain);
+	FVector GetWaveOffset(const FKawaiiPhysicsChain& Chain, const FKawaiiPhysicsModifyBone& Bone, float Time,
+	                      bool bHasFixed) const;
 
 	// --- constraint resolution ---
 	void AdjustByWorldCollision(FKawaiiPhysicsChain& Chain, FKawaiiPhysicsModifyBone& Bone,
@@ -1484,8 +1543,6 @@ protected:
 	// --- output ---
 	void ApplySimulateResult(FKawaiiPhysicsChain& Chain, FComponentSpacePoseContext& Output,
 	                         const FBoneContainer& BoneContainer, TArray<FBoneTransform>& OutBoneTransforms);
-	void WarmUp(FComponentSpacePoseContext& Output, const FBoneContainer& BoneContainer,
-	            FTransform& ComponentTransform);
 
 	FVector GetWindVelocity(const FKawaiiPhysicsChain& Chain, const FSceneInterface* Scene,
 	                        const FTransform& ComponentTransform, const FKawaiiPhysicsModifyBone& Bone) const;

@@ -17,6 +17,8 @@ public class KawaiiPhysicsEd : ModuleRules
 			// JSON importer recreates Constraint nodes, so it needs them linked.
 			"AnimationCore",
 			"Slate", "SlateCore", "EditorFramework",
+			// Details-panel toggles for the edit mode's debug drawing.
+			"PropertyEditor", "AssetTools",
 			// BaseClass of the edit mode moved into its own module in 5.1.
 			"AnimationEditMode",
 			// JSON import of cooked AnimBlueprints exported with FModel.

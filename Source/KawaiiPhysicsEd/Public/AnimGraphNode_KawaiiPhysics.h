@@ -24,10 +24,12 @@ public:
 
 	// UObject interface
 	virtual void PostLoad() override;
+	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 	// End of UObject interface
 
 	// UAnimGraphNode_Base interface
 	virtual void CopyNodeDataToPreviewNode(FAnimNode_Base* InPreviewNode) override;
+	virtual void CustomizeDetails(class IDetailLayoutBuilder& DetailBuilder) override;
 	virtual FEditorModeID GetEditorMode() const override;
 	virtual void ValidateAnimNodePostCompile(class FCompilerResultsLog& MessageLog,
 	                                         class UAnimBlueprintGeneratedClass* CompiledClass,
@@ -42,6 +44,48 @@ protected:
 
 	/** Index of the chain the edit mode is currently editing. */
 	int32 SelectedChainIndex = 0;
+
+	/** Adds the "Debug Visualization" row of toggle buttons to the details panel. */
+	void CustomizeDetailDebugVisualizations(class IDetailLayoutBuilder& DetailBuilder);
+
+	/** Adds the "Kawaii Physics Tools" row: export limits / bone constraints to data assets. */
+	void CustomizeDetailTools(class IDetailLayoutBuilder& DetailBuilder);
+	void ExportLimitsDataAsset();
+	void ExportBoneConstraintsDataAsset();
+	UPackage* CreateDataAssetPackage(const FString& DialogTitle, const FString& DefaultSuffix,
+	                                 FString& OutAssetName) const;
+	static void ShowExportAssetNotification(UObject* NewAsset, const FText& NotificationText);
+	USkeleton* GetSkeletonBeingDebugged() const;
+
+public:
+	// What the viewport edit mode draws. Graph nodes are editor-only and never
+	// cooked, so these have no bearing on the game's schema.
+	UPROPERTY()
+	bool bEnableDebugDrawBone = true;
+
+	UPROPERTY()
+	bool bEnableDebugBoneLengthRate = true;
+
+	UPROPERTY()
+	bool bEnableDebugDrawLimitAngle = true;
+
+	UPROPERTY()
+	bool bEnableDebugDrawSphereLimit = true;
+
+	UPROPERTY()
+	bool bEnableDebugDrawCapsuleLimit = true;
+
+	UPROPERTY()
+	bool bEnableDebugDrawBoxLimit = true;
+
+	UPROPERTY()
+	bool bEnableDebugDrawPlanerLimit = true;
+
+	UPROPERTY()
+	bool bEnableDebugDrawBoneConstraint = true;
+
+	UPROPERTY()
+	bool bEnableDebugDrawExternalForce = true;
 
 	friend class FKawaiiPhysicsEditMode;
 };

@@ -120,17 +120,19 @@ public:
 	{
 	}
 
-	virtual void PostApply(FAnimNode_KawaiiPhysics& Node, FKawaiiPhysicsChain& Chain)
+	/**
+	 * The Merge node's per-bone apply (game vtable slot +0x20). The Merge node
+	 * never runs PreApply or PostApply, so this works on whatever Force,
+	 * RandomizedForceScale, ComponentTransform and World the force already
+	 * holds (as loaded) -- with defaults every preset does nothing there.
+	 */
+	virtual void ApplyMerge(FKawaiiPhysicsModifyBone& Bone, float InDeltaTime,
+	                        const FTransform& BoneTM = FTransform::Identity)
 	{
-		if (bIsOneShot)
-		{
-			Chain.ExternalForceSettings.ExternalForces.RemoveAll([&](FInstancedStruct& InstancedStruct)
-			{
-				const auto* ExternalForcePtr = InstancedStruct.GetMutablePtr<FKawaiiPhysics_ExternalForce>();
-				return ExternalForcePtr == this;
-			});
-		}
 	}
+
+	/** One-shot forces remove themselves from EVERY chain of the node (game 0x7658E00). */
+	virtual void PostApply(FAnimNode_KawaiiPhysics& Node, FKawaiiPhysicsChain& Chain);
 
 	virtual bool IsDebugEnabled(bool bInPersona = false)
 	{
@@ -236,6 +238,9 @@ struct KAWAIIPHYSICS_API FKawaiiPhysics_ExternalForce_Basic : public FKawaiiPhys
 	virtual void Apply(FKawaiiPhysicsModifyBone& Bone, FAnimNode_KawaiiPhysics& Node, FKawaiiPhysicsChain& Chain,
 	                   const FComponentSpacePoseContext& PoseContext,
 	                   const FTransform& BoneTM = FTransform::Identity) override;
+	virtual void ApplyMerge(FKawaiiPhysicsModifyBone& Bone, float InDeltaTime,
+	                        const FTransform& BoneTM = FTransform::Identity) override;
+	void ApplyImpl(FKawaiiPhysicsModifyBone& Bone, float InDeltaTime, const FTransform& BoneTM);
 
 private:
 	/** [3] */
@@ -289,6 +294,9 @@ struct KAWAIIPHYSICS_API FKawaiiPhysics_ExternalForce_Gravity : public FKawaiiPh
 	virtual void Apply(FKawaiiPhysicsModifyBone& Bone, FAnimNode_KawaiiPhysics& Node, FKawaiiPhysicsChain& Chain,
 	                   const FComponentSpacePoseContext& PoseContext,
 	                   const FTransform& BoneTM = FTransform::Identity) override;
+	virtual void ApplyMerge(FKawaiiPhysicsModifyBone& Bone, float InDeltaTime,
+	                        const FTransform& BoneTM = FTransform::Identity) override;
+	void ApplyImpl(FKawaiiPhysicsModifyBone& Bone, float InDeltaTime, const FTransform& BoneTM);
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -345,6 +353,9 @@ public:
 	virtual void Apply(FKawaiiPhysicsModifyBone& Bone, FAnimNode_KawaiiPhysics& Node, FKawaiiPhysicsChain& Chain,
 	                   const FComponentSpacePoseContext& PoseContext,
 	                   const FTransform& BoneTM = FTransform::Identity) override;
+	virtual void ApplyMerge(FKawaiiPhysicsModifyBone& Bone, float InDeltaTime,
+	                        const FTransform& BoneTM = FTransform::Identity) override;
+	void ApplyImpl(FKawaiiPhysicsModifyBone& Bone, float InDeltaTime, const FTransform& BoneTM);
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -377,4 +388,7 @@ public:
 	virtual void Apply(FKawaiiPhysicsModifyBone& Bone, FAnimNode_KawaiiPhysics& Node, FKawaiiPhysicsChain& Chain,
 	                   const FComponentSpacePoseContext& PoseContext,
 	                   const FTransform& BoneTM = FTransform::Identity) override;
+	virtual void ApplyMerge(FKawaiiPhysicsModifyBone& Bone, float InDeltaTime,
+	                        const FTransform& BoneTM = FTransform::Identity) override;
+	void ApplyImpl(FKawaiiPhysicsModifyBone& Bone, float InDeltaTime, const FTransform& BoneTM);
 };

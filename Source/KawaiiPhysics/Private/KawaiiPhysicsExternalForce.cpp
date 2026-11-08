@@ -9,6 +9,18 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "SceneInterface.h"
 
+// Every force below reproduces upstream v1.18.0 (the game's merge point is at
+// or before it). Points worth knowing because they are not what you might
+// guess:
+//  - Basic, Curve and Wind displace by Force * dt -- ONE power of dt. Only
+//    Gravity uses 0.5 * Force * dt^2.
+//  - World-space forces are converted to component space once, in PreApply.
+//    Bone-space forces are carried into the bone's frame in Apply.
+//  - Gravity's magnitude comes from RandomForceScaleRange; the direction is
+//    used as authored (not normalised). With bUseCharacterGravityScale it is
+//    further multiplied by the movement component's GravityZ, which is
+//    negative -- upstream's behaviour, reproduced as is.
+
 namespace
 {
 	/** Samples ForceRateByBoneLengthRate, leaving the force alone if unauthored. */
@@ -18,21 +30,41 @@ namespace
 		return (Curve && Curve->GetNumKeys() > 0) ? Curve->Eval(LengthRate) : 1.0f;
 	}
 
-	/** Moves a component-space force into whichever space the author picked. */
-	FVector ConvertForceToComponentSpace(const FVector& ForceWS, EExternalForceSpace Space,
-	                                     const FTransform& ComponentTransform, const FTransform& BoneTM)
+	/** Basic and Curve share upstream's apply: per-space, one power of dt. */
+	void ApplyLinearForce(const FVector& Force, EExternalForceSpace Space, float ForceRate,
+	                      FKawaiiPhysicsModifyBone& Bone, const FTransform& BoneTM, float DeltaTime,
+	                      TMap<FName, FVector>& BoneForceMap)
 	{
-		switch (Space)
+		if (Space == EExternalForceSpace::BoneSpace)
 		{
-		case EExternalForceSpace::WorldSpace:
-			return ComponentTransform.InverseTransformVector(ForceWS);
-		case EExternalForceSpace::BoneSpace:
-			return BoneTM.TransformVector(ForceWS);
-		case EExternalForceSpace::ComponentSpace:
-		default:
-			return ForceWS;
+			const FVector BoneForce = BoneTM.TransformVector(Force);
+			Bone.Location += BoneForce * ForceRate * DeltaTime;
+			BoneForceMap.Add(Bone.BoneRef.BoneName, BoneForce * ForceRate);
+		}
+		else
+		{
+			Bone.Location += Force * ForceRate * DeltaTime;
+			BoneForceMap.Add(Bone.BoneRef.BoneName, Force * ForceRate);
 		}
 	}
+}
+
+void FKawaiiPhysics_ExternalForce::PostApply(FAnimNode_KawaiiPhysics& Node, FKawaiiPhysicsChain& Chain)
+{
+	if (!bIsOneShot)
+	{
+		return;
+	}
+
+	const FKawaiiPhysics_ExternalForce* Self = this;
+	for (FKawaiiPhysicsChain& Each : Node.Chains)
+	{
+		Each.ExternalForceSettings.ExternalForces.RemoveAll([Self](const FInstancedStruct& InstancedStruct)
+		{
+			return InstancedStruct.GetPtr<FKawaiiPhysics_ExternalForce>() == Self;
+		});
+	}
+	// NOTE: `this` may be destroyed now; nothing below touches it.
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -44,45 +76,59 @@ void FKawaiiPhysics_ExternalForce_Basic::PreApply(FAnimNode_KawaiiPhysics& Node,
 {
 	FKawaiiPhysics_ExternalForce::PreApply(Node, Chain, SkelComp);
 
-	Force = FVector::Zero();
+	PrevTime = Time;
+	Time += Node.DeltaTime;
 
-	if (Interval <= 0.0f)
+	if (Interval > 0.0f)
 	{
-		// Continuous.
-		Force = ForceDir * RandomizedForceScale;
+		// Fires on the frame the accumulated time passes the interval, then
+		// keeps the remainder.
+		if (Time > Interval)
+		{
+			Force = ForceDir * RandomizedForceScale;
+			Time = FMath::Fmod(Time, Interval);
+		}
+		else
+		{
+			Force = FVector::ZeroVector;
+		}
 	}
 	else
 	{
-		Time += Node.DeltaTime;
-		if (Time - PrevTime >= Interval)
-		{
-			PrevTime = Time;
-			Force = ForceDir * RandomizedForceScale;
-		}
+		Force = ForceDir * RandomizedForceScale;
 	}
 
-#if ENABLE_ANIM_DEBUG
+	if (ExternalForceSpace == EExternalForceSpace::WorldSpace)
+	{
+		Force = ComponentTransform.InverseTransformVector(Force);
+	}
+
 	BoneForceMap.Reset();
-#endif
 }
 
 void FKawaiiPhysics_ExternalForce_Basic::Apply(FKawaiiPhysicsModifyBone& Bone, FAnimNode_KawaiiPhysics& Node,
-                                               FKawaiiPhysicsChain& Chain,
-                                               const FComponentSpacePoseContext& PoseContext, const FTransform& BoneTM)
+                                       FKawaiiPhysicsChain& Chain,
+                                       const FComponentSpacePoseContext& PoseContext, const FTransform& BoneTM)
 {
-	if (Force.IsZero() || !CanApply(Bone))
+	ApplyImpl(Bone, Node.DeltaTime, BoneTM);
+}
+
+void FKawaiiPhysics_ExternalForce_Basic::ApplyMerge(FKawaiiPhysicsModifyBone& Bone, float InDeltaTime,
+                                       const FTransform& BoneTM)
+{
+	ApplyImpl(Bone, InDeltaTime, BoneTM);
+}
+
+void FKawaiiPhysics_ExternalForce_Basic::ApplyImpl(FKawaiiPhysicsModifyBone& Bone, float InDeltaTime,
+                                       const FTransform& BoneTM)
+{
+	if (!CanApply(Bone))
 	{
 		return;
 	}
 
-	const FVector BoneForce = ConvertForceToComponentSpace(Force, ExternalForceSpace, ComponentTransform, BoneTM)
-		* EvalForceRate(ForceRateByBoneLengthRate, Bone.LengthRateFromRoot);
-
-	Bone.Location += BoneForce * Node.DeltaTime * Node.DeltaTime;
-
-#if ENABLE_ANIM_DEBUG
-	BoneForceMap.Add(Bone.BoneRef.BoneName, BoneForce);
-#endif
+	ApplyLinearForce(Force, ExternalForceSpace, EvalForceRate(ForceRateByBoneLengthRate, Bone.LengthRateFromRoot),
+	                 Bone, BoneTM, InDeltaTime, BoneForceMap);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -94,67 +140,54 @@ void FKawaiiPhysics_ExternalForce_Gravity::PreApply(FAnimNode_KawaiiPhysics& Nod
 {
 	FKawaiiPhysics_ExternalForce::PreApply(Node, Chain, SkelComp);
 
-	FVector GravityDirection = FVector(0.0f, 0.0f, -1.0f);
-	float GravityScale = 1.0f;
-
-	if (bUseOverrideGravityDirection && !OverrideGravityDirection.IsNearlyZero())
-	{
-		GravityDirection = OverrideGravityDirection.GetSafeNormal();
-	}
+	Force = bUseOverrideGravityDirection ? OverrideGravityDirection : FVector(0, 0, -1.0f);
 
 	if (const ACharacter* Character = SkelComp ? Cast<ACharacter>(SkelComp->GetOwner()) : nullptr)
 	{
-		if (const UCharacterMovementComponent* Movement = Character->GetCharacterMovement())
+		if (bUseCharacterGravityDirection)
 		{
-			if (bUseCharacterGravityScale)
-			{
-				GravityScale = Movement->GravityScale;
-			}
+			Force = Character->GetGravityDirection();
+		}
 
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 4
-			if (bUseCharacterGravityDirection)
+		if (bUseCharacterGravityScale)
+		{
+			if (const UCharacterMovementComponent* CharacterMovementComponent = Character->GetCharacterMovement())
 			{
-				GravityDirection = Movement->GetGravityDirection();
+				Force *= CharacterMovementComponent->GetGravityZ();
 			}
-#else
-			// Custom gravity direction only exists from 5.4; on 5.3 the movement
-			// component is always -Z, so there is nothing to read.
-#endif
 		}
 	}
 
-	const float WorldGravityZ = SkelComp && SkelComp->GetWorld()
-		                            ? SkelComp->GetWorld()->GetGravityZ()
-		                            : -980.0f;
+	Force *= RandomizedForceScale;
+	Force = ComponentTransform.InverseTransformVector(Force);
 
-	Force = GravityDirection * FMath::Abs(WorldGravityZ) * GravityScale * RandomizedForceScale;
-
-#if ENABLE_ANIM_DEBUG
 	BoneForceMap.Reset();
-#endif
 }
 
 void FKawaiiPhysics_ExternalForce_Gravity::Apply(FKawaiiPhysicsModifyBone& Bone, FAnimNode_KawaiiPhysics& Node,
-                                                 FKawaiiPhysicsChain& Chain,
-                                                 const FComponentSpacePoseContext& PoseContext,
-                                                 const FTransform& BoneTM)
+                                       FKawaiiPhysicsChain& Chain,
+                                       const FComponentSpacePoseContext& PoseContext, const FTransform& BoneTM)
 {
-	if (Force.IsZero() || !CanApply(Bone))
+	ApplyImpl(Bone, Node.DeltaTime, BoneTM);
+}
+
+void FKawaiiPhysics_ExternalForce_Gravity::ApplyMerge(FKawaiiPhysicsModifyBone& Bone, float InDeltaTime,
+                                       const FTransform& BoneTM)
+{
+	ApplyImpl(Bone, InDeltaTime, BoneTM);
+}
+
+void FKawaiiPhysics_ExternalForce_Gravity::ApplyImpl(FKawaiiPhysicsModifyBone& Bone, float InDeltaTime,
+                                       const FTransform& BoneTM)
+{
+	if (!CanApply(Bone))
 	{
 		return;
 	}
 
-	// Gravity is always world space, and is additionally scaled per bone by the
-	// chain's own GravityScale so a single chain can be made lighter or heavier.
-	const FVector BoneForce = ComponentTransform.InverseTransformVector(Force)
-		* EvalForceRate(ForceRateByBoneLengthRate, Bone.LengthRateFromRoot)
-		* Bone.PhysicsSettings.GravityScale;
-
-	Bone.Location += BoneForce * Node.DeltaTime * Node.DeltaTime;
-
-#if ENABLE_ANIM_DEBUG
-	BoneForceMap.Add(Bone.BoneRef.BoneName, BoneForce);
-#endif
+	const float ForceRate = EvalForceRate(ForceRateByBoneLengthRate, Bone.LengthRateFromRoot);
+	Bone.Location += 0.5f * Force * ForceRate * InDeltaTime * InDeltaTime;
+	BoneForceMap.Add(Bone.BoneRef.BoneName, Force * ForceRate);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -163,8 +196,8 @@ void FKawaiiPhysics_ExternalForce_Gravity::Apply(FKawaiiPhysicsModifyBone& Bone,
 
 void FKawaiiPhysics_ExternalForce_Curve::InitMaxCurveTime()
 {
-	MaxCurveTime = 0.0f;
-
+	// As upstream: a running maximum over each axis' last key. It is never
+	// reset, so it only grows.
 	for (int32 Axis = 0; Axis < 3; ++Axis)
 	{
 		const FRichCurve& Curve = ForceCurve.VectorCurves[Axis];
@@ -178,101 +211,111 @@ void FKawaiiPhysics_ExternalForce_Curve::InitMaxCurveTime()
 void FKawaiiPhysics_ExternalForce_Curve::Initialize(const FAnimationInitializeContext& Context)
 {
 	FKawaiiPhysics_ExternalForce::Initialize(Context);
-
 	InitMaxCurveTime();
-	Time = 0.0f;
-	PrevTime = 0.0f;
 }
 
 void FKawaiiPhysics_ExternalForce_Curve::PreApply(FAnimNode_KawaiiPhysics& Node, FKawaiiPhysicsChain& Chain,
                                                   const USkeletalMeshComponent* SkelComp)
 {
+	// The game's PreApply does not compute MaxCurveTime; only Initialize does
+	// (and on the main node it runs on copies, so the live value stays as
+	// loaded -- see FAnimNode_KawaiiPhysics::Initialize_AnyThread).
 	FKawaiiPhysics_ExternalForce::PreApply(Node, Chain, SkelComp);
-
-	if (MaxCurveTime <= 0.0f)
-	{
-		InitMaxCurveTime();
-		if (MaxCurveTime <= 0.0f)
-		{
-			Force = FVector::Zero();
-			return;
-		}
-	}
-
 	PrevTime = Time;
-	Time = FMath::Fmod(Time + Node.DeltaTime * TimeScale, MaxCurveTime);
 
-	auto Sample = [this](float SampleTime)
+	auto Wrap = [this]()
 	{
-		return FVector(
-			ForceCurve.VectorCurves[0].Eval(SampleTime),
-			ForceCurve.VectorCurves[1].Eval(SampleTime),
-			ForceCurve.VectorCurves[2].Eval(SampleTime));
+		if (MaxCurveTime > 0 && Time > MaxCurveTime)
+		{
+			Time = FMath::Fmod(Time, MaxCurveTime);
+		}
 	};
 
-	if (CurveEvaluateType == EExternalForceCurveEvaluateType::Single || SubstepCount <= 1)
+	if (CurveEvaluateType == EExternalForceCurveEvaluateType::Single)
 	{
-		Force = Sample(Time);
+		Time += Node.DeltaTime * TimeScale;
+		Wrap();
+		Force = ForceCurve.GetValue(Time) * RandomizedForceScale;
 	}
 	else
 	{
-		// Subdivide the elapsed interval so a fast-moving curve is not aliased
-		// down to whatever single value happened to land on this frame.
-		const float Step = Node.DeltaTime * TimeScale / static_cast<float>(SubstepCount);
-
-		FVector Accumulated = FVector::Zero();
-		FVector Best = Sample(PrevTime);
-
-		for (int32 Index = 0; Index < SubstepCount; ++Index)
+		TArray<FVector> CurveValues;
+		const float SubStep = Node.DeltaTime * TimeScale / SubstepCount;
+		for (int32 i = 0; i < SubstepCount; ++i)
 		{
-			const float SampleTime = FMath::Fmod(PrevTime + Step * (Index + 1), MaxCurveTime);
-			const FVector Sampled = Sample(SampleTime);
-
-			switch (CurveEvaluateType)
-			{
-			case EExternalForceCurveEvaluateType::Average:
-				Accumulated += Sampled;
-				break;
-			case EExternalForceCurveEvaluateType::Max:
-				if (Sampled.SizeSquared() > Best.SizeSquared()) Best = Sampled;
-				break;
-			case EExternalForceCurveEvaluateType::Min:
-				if (Sampled.SizeSquared() < Best.SizeSquared()) Best = Sampled;
-				break;
-			default:
-				break;
-			}
+			Time += SubStep;
+			Wrap();
+			CurveValues.Add(ForceCurve.GetValue(Time));
 		}
 
-		Force = CurveEvaluateType == EExternalForceCurveEvaluateType::Average
-			        ? Accumulated / static_cast<float>(SubstepCount)
-			        : Best;
+		// Max / Min are per component, not by magnitude.
+		Force = FVector::ZeroVector;
+		switch (CurveEvaluateType)
+		{
+		case EExternalForceCurveEvaluateType::Average:
+			for (const FVector& CurveValue : CurveValues)
+			{
+				Force += CurveValue;
+			}
+			Force /= static_cast<float>(SubstepCount);
+			break;
+
+		case EExternalForceCurveEvaluateType::Max:
+			// Upstream seeds with FLT_MIN (the smallest POSITIVE float), so an
+			// all-negative component comes out as ~0. Reproduced as is.
+			Force = FVector(FLT_MIN);
+			for (const FVector& CurveValue : CurveValues)
+			{
+				Force = FVector::Max(Force, CurveValue);
+			}
+			break;
+
+		case EExternalForceCurveEvaluateType::Min:
+			Force = FVector(FLT_MAX);
+			for (const FVector& CurveValue : CurveValues)
+			{
+				Force = FVector::Min(Force, CurveValue);
+			}
+			break;
+
+		default:
+			break;
+		}
+
+		Force *= RandomizedForceScale;
 	}
 
-	Force *= RandomizedForceScale;
+	if (ExternalForceSpace == EExternalForceSpace::WorldSpace)
+	{
+		Force = ComponentTransform.InverseTransformVector(Force);
+	}
 
-#if ENABLE_ANIM_DEBUG
 	BoneForceMap.Reset();
-#endif
 }
 
 void FKawaiiPhysics_ExternalForce_Curve::Apply(FKawaiiPhysicsModifyBone& Bone, FAnimNode_KawaiiPhysics& Node,
-                                               FKawaiiPhysicsChain& Chain,
-                                               const FComponentSpacePoseContext& PoseContext, const FTransform& BoneTM)
+                                       FKawaiiPhysicsChain& Chain,
+                                       const FComponentSpacePoseContext& PoseContext, const FTransform& BoneTM)
 {
-	if (Force.IsZero() || !CanApply(Bone))
+	ApplyImpl(Bone, Node.DeltaTime, BoneTM);
+}
+
+void FKawaiiPhysics_ExternalForce_Curve::ApplyMerge(FKawaiiPhysicsModifyBone& Bone, float InDeltaTime,
+                                       const FTransform& BoneTM)
+{
+	ApplyImpl(Bone, InDeltaTime, BoneTM);
+}
+
+void FKawaiiPhysics_ExternalForce_Curve::ApplyImpl(FKawaiiPhysicsModifyBone& Bone, float InDeltaTime,
+                                       const FTransform& BoneTM)
+{
+	if (!CanApply(Bone))
 	{
 		return;
 	}
 
-	const FVector BoneForce = ConvertForceToComponentSpace(Force, ExternalForceSpace, ComponentTransform, BoneTM)
-		* EvalForceRate(ForceRateByBoneLengthRate, Bone.LengthRateFromRoot);
-
-	Bone.Location += BoneForce * Node.DeltaTime * Node.DeltaTime;
-
-#if ENABLE_ANIM_DEBUG
-	BoneForceMap.Add(Bone.BoneRef.BoneName, BoneForce);
-#endif
+	ApplyLinearForce(Force, ExternalForceSpace, EvalForceRate(ForceRateByBoneLengthRate, Bone.LengthRateFromRoot),
+	                 Bone, BoneTM, InDeltaTime, BoneForceMap);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -283,41 +326,46 @@ void FKawaiiPhysics_ExternalForce_Wind::PreApply(FAnimNode_KawaiiPhysics& Node, 
                                                  const USkeletalMeshComponent* SkelComp)
 {
 	FKawaiiPhysics_ExternalForce::PreApply(Node, Chain, SkelComp);
-
 	World = SkelComp ? SkelComp->GetWorld() : nullptr;
-
-#if ENABLE_ANIM_DEBUG
 	BoneForceMap.Reset();
-#endif
 }
 
 void FKawaiiPhysics_ExternalForce_Wind::Apply(FKawaiiPhysicsModifyBone& Bone, FAnimNode_KawaiiPhysics& Node,
-                                              FKawaiiPhysicsChain& Chain,
-                                              const FComponentSpacePoseContext& PoseContext, const FTransform& BoneTM)
+                                       FKawaiiPhysicsChain& Chain,
+                                       const FComponentSpacePoseContext& PoseContext, const FTransform& BoneTM)
 {
-	if (!World || !World->Scene || !CanApply(Bone))
+	ApplyImpl(Bone, Node.DeltaTime, BoneTM);
+}
+
+void FKawaiiPhysics_ExternalForce_Wind::ApplyMerge(FKawaiiPhysicsModifyBone& Bone, float InDeltaTime,
+                                       const FTransform& BoneTM)
+{
+	ApplyImpl(Bone, InDeltaTime, BoneTM);
+}
+
+void FKawaiiPhysics_ExternalForce_Wind::ApplyImpl(FKawaiiPhysicsModifyBone& Bone, float InDeltaTime,
+                                       const FTransform& BoneTM)
+{
+	const FSceneInterface* Scene = World && World->Scene ? World->Scene : nullptr;
+	if (!CanApply(Bone) || !Scene)
 	{
 		return;
 	}
 
-	// Wind is sampled per bone, since directional sources fall off with distance.
-	const FVector WorldLocation = ComponentTransform.TransformPosition(Bone.Location);
+	const float ForceRate = EvalForceRate(ForceRateByBoneLengthRate, Bone.LengthRateFromRoot);
 
+	// Sampled at the bone's POSE location. This preset does not use the
+	// chain's WindScale -- that belongs to the node-level wind only.
 	FVector WindDirection = FVector::ZeroVector;
 	float WindSpeed = 0.0f;
 	float WindMinGust = 0.0f;
 	float WindMaxGust = 0.0f;
-	World->Scene->GetWindParameters_GameThread(WorldLocation, WindDirection, WindSpeed, WindMinGust, WindMaxGust);
+	Scene->GetWindParameters(ComponentTransform.TransformPosition(Bone.PoseLocation), WindDirection,
+	                         WindSpeed, WindMinGust, WindMaxGust);
 
-	Force = WindDirection * WindSpeed * RandomizedForceScale;
+	WindDirection = ComponentTransform.InverseTransformVector(WindDirection);
+	WindDirection *= WindSpeed;
 
-	const FVector BoneForce = ComponentTransform.InverseTransformVector(Force)
-		* EvalForceRate(ForceRateByBoneLengthRate, Bone.LengthRateFromRoot)
-		* Chain.ExternalForceSettings.WindScale;
-
-	Bone.Location += BoneForce * Node.DeltaTime * Node.DeltaTime;
-
-#if ENABLE_ANIM_DEBUG
-	BoneForceMap.Add(Bone.BoneRef.BoneName, BoneForce);
-#endif
+	Bone.Location += WindDirection * ForceRate * RandomizedForceScale * InDeltaTime;
+	BoneForceMap.Add(Bone.BoneRef.BoneName, WindDirection * ForceRate * RandomizedForceScale);
 }

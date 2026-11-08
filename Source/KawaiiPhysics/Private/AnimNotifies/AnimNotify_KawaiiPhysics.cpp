@@ -5,6 +5,9 @@
 #include "KawaiiPhysicsExternalForce.h"
 #include "KawaiiPhysicsLibrary.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Animation/AnimSequenceBase.h"
+#include "Logging/MessageLog.h"
+#include "Misc/UObjectToken.h"
 
 UAnimNotify_KawaiiPhysicsAddExternalForce::UAnimNotify_KawaiiPhysicsAddExternalForce(
 	const FObjectInitializer& ObjectInitializer)
@@ -40,5 +43,39 @@ void UAnimNotify_KawaiiPhysicsAddExternalForce::Notify(USkeletalMeshComponent* M
 void UAnimNotify_KawaiiPhysicsAddExternalForce::ValidateAssociatedAssets()
 {
 	Super::ValidateAssociatedAssets();
+
+	// As upstream: an AdditionalExternalForces entry with no type set does
+	// nothing at runtime, and is easy to leave behind by accident -- say so.
+	static const FName NAME_AssetCheck("AssetCheck");
+
+	const UAnimSequenceBase* ContainingAsset = Cast<UAnimSequenceBase>(GetContainingAsset());
+	if (!ContainingAsset)
+	{
+		return;
+	}
+
+	for (const FInstancedStruct& Force : AdditionalExternalForces)
+	{
+		if (Force.IsValid())
+		{
+			continue;
+		}
+
+		const FText Message = FText::Format(
+			NSLOCTEXT("AnimNotify", "ExternalForce_ShouldSet",
+			          " AnimNotify(KawaiiPhysics_AddExternalForce) has an AdditionalExternalForces entry with no force type set, in {0}"),
+			FText::AsCultureInvariant(ContainingAsset->GetPathName()));
+
+		FMessageLog AssetCheckLog(NAME_AssetCheck);
+		AssetCheckLog.Warning()
+		             ->AddToken(FUObjectToken::Create(ContainingAsset))
+		             ->AddToken(FTextToken::Create(Message));
+
+		if (GIsEditor)
+		{
+			constexpr bool bForce = true;
+			AssetCheckLog.Notify(Message, EMessageSeverity::Warning, bForce);
+		}
+	}
 }
 #endif

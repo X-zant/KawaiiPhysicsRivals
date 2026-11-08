@@ -1,7 +1,9 @@
 ﻿// KawaiiPhysics : Copyright (c) 2019-2024 pafuhana1213, MIT License
 //
-// The Merge node runs the same solver as FAnimNode_KawaiiPhysics, but resolves
-// every chain against one shared set of limits and one shared constraint pass.
+// The Merge node, following the game's compiled FAnimNode_KawaiiPhysicsMerge
+// (S9.5: vtable 0xC851A78, EvaluateSkeletalControl 0x7674F60). Several chains
+// share one set of limits; its bone constraints are serialized but, as in the
+// game, never solved.
 
 #include "AnimNode_KawaiiPhysicsMerge.h"
 
@@ -39,11 +41,8 @@ void FAnimNode_KawaiiPhysicsMerge::Initialize_AnyThread(const FAnimationInitiali
 {
 	Super::Initialize_AnyThread(Context);
 
-	for (FSingleNodeParameter& Param : Nodes)
-	{
-		Param.bInitialized = false;
-		Param.ModifyBones.Empty();
-	}
+	// The game's Initialize (0x7677A30) empties a COPY of each chain, so the
+	// chains themselves keep their bones; reproduced by not touching them.
 
 	for (FInstancedStruct& ForceStruct : ExternalForces)
 	{
@@ -55,16 +54,14 @@ void FAnimNode_KawaiiPhysicsMerge::Initialize_AnyThread(const FAnimationInitiali
 
 	bInitPhysicsSettings = false;
 	bResetDynamics = false;
+	DeltaTimeOld = TargetFramerate > 0 ? 1.0f / TargetFramerate : 0.0f;
 }
 
 void FAnimNode_KawaiiPhysicsMerge::CacheBones_AnyThread(const FAnimationCacheBonesContext& Context)
 {
+	// A new bone container re-resolves the bones in place (InitializeBoneReferences);
+	// it does not rebuild the chains.
 	Super::CacheBones_AnyThread(Context);
-
-	for (FSingleNodeParameter& Param : Nodes)
-	{
-		Param.bInitialized = false;
-	}
 }
 
 void FAnimNode_KawaiiPhysicsMerge::InitializeBoneReferences(const FBoneContainer& RequiredBones)
@@ -92,6 +89,16 @@ void FAnimNode_KawaiiPhysicsMerge::InitializeBoneReferences(const FBoneContainer
 		for (FBoneShape& Shape : Param.CustomShapes)
 		{
 			Shape.DrivingBone.Initialize(RequiredBones);
+		}
+
+		for (FKawaiiPhysicsModifyBone& ModifyBone : Param.ModifyBones)
+		{
+			ModifyBone.BoneRef.Initialize(RequiredBones);
+		}
+		Param.FollowBoneRef.Initialize(RequiredBones);
+		if (Param.bRootBoneSimulate)
+		{
+			Param.RootParentRef.Initialize(RequiredBones);
 		}
 	}
 
@@ -128,6 +135,10 @@ void FAnimNode_KawaiiPhysicsMerge::InitializeBoneReferences(const FBoneContainer
 		PlanarLimitsData = LimitsDataAsset->PlanarLimits;
 	}
 
+	// The Merge node builds limits from PhysicsAssetForLimits too (game 0x7671BE0).
+	FAnimNode_KawaiiPhysics::BuildPhysicsAssetLimits(PhysicsAssetForLimits, RequiredBones, SphericalLimitsData,
+	                                                 CapsuleLimitsData, BoxLimitsData);
+
 	auto InitLimits = [&RequiredBones](auto& Limits)
 	{
 		for (auto& Limit : Limits)
@@ -155,15 +166,9 @@ bool FAnimNode_KawaiiPhysicsMerge::IsValidToEvaluate(const USkeleton* Skeleton, 
 	}
 #endif
 
-	for (const FSingleNodeParameter& Param : Nodes)
-	{
-		if (Param.RootBone.IsValidToEvaluate(RequiredBones))
-		{
-			return true;
-		}
-	}
-
-	return false;
+	// Game 0x7677ED0 only checks that the bone NAMES are valid, which is always
+	// true in practice; the real gate is inside the evaluation.
+	return true;
 }
 
 bool FAnimNode_KawaiiPhysicsMerge::HasPreUpdate() const
@@ -202,7 +207,12 @@ void FAnimNode_KawaiiPhysicsMerge::ResetDynamics(ETeleportType InTeleportType)
 {
 	Super::ResetDynamics(InTeleportType);
 
-	bResetDynamics = true;
+	// Game 0x76798B0.
+	bResetDynamics |= (InTeleportType == ETeleportType::ResetPhysics);
+	if (bUseWarmUpWhenResetDynamics)
+	{
+		bNeedWarmUp = true;
+	}
 }
 
 void FAnimNode_KawaiiPhysicsMerge::GatherDebugData(FNodeDebugData& DebugData)
@@ -222,7 +232,8 @@ void FAnimNode_KawaiiPhysicsMerge::GatherDebugData(FNodeDebugData& DebugData)
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// Setup
+// Setup -- the game's AddModifyBone 0x76691C0 / InitModifyBones 0x7667780 /
+// CalcBoneLength 0x7673680
 ///////////////////////////////////////////////////////////////////////////////
 
 int32 FAnimNode_KawaiiPhysicsMerge::AddModifyBone(FSingleNodeParameter& Param,
@@ -247,33 +258,14 @@ int32 FAnimNode_KawaiiPhysicsMerge::AddModifyBone(FSingleNodeParameter& Param,
 	NewBone.BoneRef.BoneName = BoneName;
 	NewBone.BoneRef.Initialize(BoneContainer);
 
-	if (!NewBone.BoneRef.IsValidToEvaluate(BoneContainer))
-	{
-		return INDEX_NONE;
-	}
-
 	const FCompactPoseBoneIndex CompactPoseIndex = NewBone.BoneRef.GetCompactPoseIndex(BoneContainer);
-	if (CompactPoseIndex < 0)
+	if (!NewBone.BoneRef.IsValidToEvaluate(BoneContainer) || CompactPoseIndex < 0)
 	{
 		return INDEX_NONE;
 	}
-
-	const int32 NewIndex = InModifyBones.Add(NewBone);
-	FKawaiiPhysicsModifyBone& Bone = InModifyBones[NewIndex];
-	Bone.Index = NewIndex;
-
-	const FTransform ComponentSpaceTransform = Output.Pose.GetComponentSpaceTransform(CompactPoseIndex);
-	Bone.Location = ComponentSpaceTransform.GetLocation();
-	Bone.PrevLocation = Bone.Location;
-	Bone.PoseLocation = Bone.Location;
-	Bone.Rotation = ComponentSpaceTransform.GetRotation();
-	Bone.PrevRotation = Bone.Rotation;
-	Bone.PoseRotation = Bone.Rotation;
-	Bone.PoseScale = ComponentSpaceTransform.GetScale3D();
 
 	TArray<int32> Children;
-	const int32 NumBones = RefSkeleton.GetNum();
-	for (int32 ChildIndex = BoneIndex + 1; ChildIndex < NumBones; ++ChildIndex)
+	for (int32 ChildIndex = BoneIndex + 1; ChildIndex < RefSkeleton.GetNum(); ++ChildIndex)
 	{
 		if (BoneIndex == RefSkeleton.GetParentIndex(ChildIndex))
 		{
@@ -281,40 +273,75 @@ int32 FAnimNode_KawaiiPhysicsMerge::AddModifyBone(FSingleNodeParameter& Param,
 		}
 	}
 
-	if (Children.Num() == 0)
+	// The only fixed bone: FixedBone, with bShouldFixTailBone, when it has no
+	// skeleton children. It follows FollowBone when that exists.
+	if (Param.bShouldFixTailBone && Param.FixedBone.BoneName != NAME_None && BoneName == Param.FixedBone.BoneName &&
+		Children.Num() == 0)
 	{
-		if (Param.DummyBoneLength > 0.0f)
-		{
-			FKawaiiPhysicsModifyBone DummyBone;
-			DummyBone.BoneRef = InModifyBones[NewIndex].BoneRef;
-			DummyBone.bDummy = true;
-			DummyBone.Location = InModifyBones[NewIndex].Location +
-				GetForwardVector(InModifyBones[NewIndex].Rotation, Param.BoneForwardAxis) * Param.DummyBoneLength;
-			DummyBone.PrevLocation = DummyBone.Location;
-			DummyBone.PoseLocation = DummyBone.Location;
-			DummyBone.Rotation = InModifyBones[NewIndex].Rotation;
-			DummyBone.PrevRotation = DummyBone.Rotation;
-			DummyBone.PoseRotation = DummyBone.Rotation;
-			DummyBone.PoseScale = InModifyBones[NewIndex].PoseScale;
+		NewBone.bFixed = true;
+		Param.FollowBoneRef = Param.FollowBone;
+		Param.FollowBoneRef.Initialize(BoneContainer);
 
-			const int32 DummyIndex = InModifyBones.Add(DummyBone);
-			InModifyBones[DummyIndex].Index = DummyIndex;
-			InModifyBones[DummyIndex].ParentIndex = NewIndex;
-			InModifyBones[NewIndex].ChildIndices.Add(DummyIndex);
+		const int32 FollowIndex = RefSkeleton.FindBoneIndex(Param.FollowBone.BoneName);
+		if (FollowIndex != INDEX_NONE)
+		{
+			auto RefComponentSpace = [&RefSkeleton](int32 Index)
+			{
+				FTransform Result = FTransform::Identity;
+				for (int32 Walk = Index; Walk != INDEX_NONE; Walk = RefSkeleton.GetParentIndex(Walk))
+				{
+					Result = Result * RefSkeleton.GetRefBonePose()[Walk];
+				}
+				return Result;
+			};
+
+			NewBone.bHasFollowBone = true;
+			Param.FixedRefRelToFollow = RefComponentSpace(BoneIndex).GetRelativeTransform(RefComponentSpace(FollowIndex));
 		}
 	}
-	else
+
+	const FTransform ComponentSpaceTransform = Output.Pose.GetComponentSpaceTransform(CompactPoseIndex);
+	NewBone.Location = ComponentSpaceTransform.GetLocation();
+	NewBone.PrevLocation = NewBone.Location;
+	NewBone.PoseLocation = NewBone.Location;
+	NewBone.Rotation = ComponentSpaceTransform.GetRotation();
+	NewBone.PrevRotation = NewBone.Rotation;
+	NewBone.PoseRotation = NewBone.Rotation;
+	NewBone.PoseScale = ComponentSpaceTransform.GetScale3D();
+
+	const int32 NewIndex = InModifyBones.Add(NewBone);
+	InModifyBones[NewIndex].Index = NewIndex;
+
+	for (const int32 ChildBoneIndex : Children)
 	{
-		for (const int32 ChildBoneIndex : Children)
+		const int32 ChildModifyIndex =
+			AddModifyBone(Param, InModifyBones, Output, BoneContainer, RefSkeleton, ChildBoneIndex, InExcludeBones);
+		if (ChildModifyIndex != INDEX_NONE)
 		{
-			const int32 ChildModifyIndex =
-				AddModifyBone(Param, InModifyBones, Output, BoneContainer, RefSkeleton, ChildBoneIndex, InExcludeBones);
-			if (ChildModifyIndex != INDEX_NONE)
-			{
-				InModifyBones[ChildModifyIndex].ParentIndex = NewIndex;
-				InModifyBones[NewIndex].ChildIndices.Add(ChildModifyIndex);
-			}
+			InModifyBones[ChildModifyIndex].ParentIndex = NewIndex;
+			InModifyBones[NewIndex].ChildIndices.Add(ChildModifyIndex);
 		}
+	}
+
+	// A dummy tail whenever no child was ADDED (excluded children count as none).
+	if (InModifyBones[NewIndex].ChildIndices.IsEmpty() && Param.DummyBoneLength > 0.0f)
+	{
+		FKawaiiPhysicsModifyBone DummyBone;
+		DummyBone.BoneRef = InModifyBones[NewIndex].BoneRef;
+		DummyBone.bDummy = true;
+		DummyBone.Location = InModifyBones[NewIndex].Location +
+			GetForwardVector(InModifyBones[NewIndex].PoseRotation, Param.BoneForwardAxis) * Param.DummyBoneLength;
+		DummyBone.PrevLocation = DummyBone.Location;
+		DummyBone.PoseLocation = DummyBone.Location;
+		DummyBone.Rotation = InModifyBones[NewIndex].PoseRotation;
+		DummyBone.PrevRotation = DummyBone.Rotation;
+		DummyBone.PoseRotation = DummyBone.Rotation;
+		DummyBone.PoseScale = InModifyBones[NewIndex].PoseScale;
+
+		const int32 DummyIndex = InModifyBones.Add(DummyBone);
+		InModifyBones[DummyIndex].Index = DummyIndex;
+		InModifyBones[DummyIndex].ParentIndex = NewIndex;
+		InModifyBones[NewIndex].ChildIndices.Add(DummyIndex);
 	}
 
 	return NewIndex;
@@ -325,12 +352,24 @@ void FAnimNode_KawaiiPhysicsMerge::CalcBoneLength(FSingleNodeParameter& Param, F
 {
 	if (!Bone.HasParent())
 	{
+		// A simulated root measures its reference offset from its skeleton
+		// parent, and that sets the total outright.
 		Bone.LengthFromRoot = 0.0f;
+		if (Param.bRootBoneSimulate && RefBonePose.IsValidIndex(Bone.BoneRef.BoneIndex))
+		{
+			Bone.LengthFromRoot = RefBonePose[Bone.BoneRef.BoneIndex].GetLocation().Size();
+			Param.TotalBoneLength = Bone.LengthFromRoot;
+		}
 	}
 	else
 	{
 		const FKawaiiPhysicsModifyBone& Parent = Param.ModifyBones[Bone.ParentIndex];
-		Bone.LengthFromRoot = Parent.LengthFromRoot + (Bone.PoseLocation - Parent.PoseLocation).Size();
+		float StepLength = Param.DummyBoneLength;
+		if (!Bone.bDummy && RefBonePose.IsValidIndex(Bone.BoneRef.BoneIndex))
+		{
+			StepLength = RefBonePose[Bone.BoneRef.BoneIndex].GetLocation().Size();
+		}
+		Bone.LengthFromRoot = Parent.LengthFromRoot + StepLength;
 	}
 
 	Param.TotalBoneLength = FMath::Max(Param.TotalBoneLength, Bone.LengthFromRoot);
@@ -346,188 +385,69 @@ void FAnimNode_KawaiiPhysicsMerge::InitModifyBones(FSingleNodeParameter& Param, 
 {
 	const FReferenceSkeleton& RefSkeleton = BoneContainer.GetReferenceSkeleton();
 
+	// A simulated root is solved against its skeleton parent; with none, the
+	// setting is cleared.
+	if (Param.bRootBoneSimulate)
+	{
+		const int32 RootIndex = RefSkeleton.FindBoneIndex(Param.RootBone.BoneName);
+		const int32 RootParent = RootIndex != INDEX_NONE ? RefSkeleton.GetParentIndex(RootIndex) : INDEX_NONE;
+		if (RootParent == INDEX_NONE)
+		{
+			Param.bRootBoneSimulate = false;
+			Param.RootParentRef = FBoneReference();
+		}
+		else
+		{
+			Param.RootParentRef.BoneName = RefSkeleton.GetBoneName(RootParent);
+			Param.RootParentRef.Initialize(BoneContainer);
+		}
+		Param.bHasVirtualParent = false;
+	}
+
+	// NOTE: the game never resets TotalBoneLength in this node, and computes each
+	// root subtree's length rates from the total accumulated so far. Reproduced.
 	Param.ModifyBones.Reset();
-	Param.TotalBoneLength = 0.0f;
-	Param.FollowBoneIndex = INDEX_NONE;
+	const TArray<FTransform>& RefBonePose = RefSkeleton.GetRefBonePose();
+
+	auto AddRoot = [&](int32 RefIndex, const TArray<FBoneReference>& Excludes)
+	{
+		const int32 Start = Param.ModifyBones.Num();
+		const int32 RootModify =
+			AddModifyBone(Param, Param.ModifyBones, Output, BoneContainer, RefSkeleton, RefIndex, Excludes);
+		if (RootModify == INDEX_NONE)
+		{
+			return;
+		}
+
+		CalcBoneLength(Param, Param.ModifyBones[RootModify], RefBonePose);
+		for (int32 Index = Start; Index < Param.ModifyBones.Num(); ++Index)
+		{
+			FKawaiiPhysicsModifyBone& Bone = Param.ModifyBones[Index];
+			if (Bone.LengthFromRoot > 0.0f && Param.TotalBoneLength > 0.0f)
+			{
+				Bone.LengthRateFromRoot = Bone.LengthFromRoot / Param.TotalBoneLength;
+			}
+		}
+	};
 
 	const int32 RootBoneIndex = RefSkeleton.FindBoneIndex(Param.RootBone.BoneName);
 	if (RootBoneIndex != INDEX_NONE)
 	{
-		AddModifyBone(Param, Param.ModifyBones, Output, BoneContainer, RefSkeleton, RootBoneIndex, Param.ExcludeBones);
+		AddRoot(RootBoneIndex, Param.ExcludeBones);
 	}
 
 	for (const FKawaiiPhysicsRootBoneSetting& Additional : Param.AdditionalRootBones)
 	{
 		const int32 AdditionalIndex = RefSkeleton.FindBoneIndex(Additional.RootBone.BoneName);
-		if (AdditionalIndex == INDEX_NONE)
+		if (AdditionalIndex != INDEX_NONE)
 		{
-			continue;
-		}
-
-		const TArray<FBoneReference>& Excludes = Additional.bUseOverrideExcludeBones
-			                                         ? Additional.OverrideExcludeBones
-			                                         : Param.ExcludeBones;
-		AddModifyBone(Param, Param.ModifyBones, Output, BoneContainer, RefSkeleton, AdditionalIndex, Excludes);
-	}
-
-	if (Param.ModifyBones.IsEmpty())
-	{
-		Param.bInitialized = true;
-		return;
-	}
-
-	const TArray<FTransform>& RefBonePose = RefSkeleton.GetRefBonePose();
-	for (FKawaiiPhysicsModifyBone& Bone : Param.ModifyBones)
-	{
-		if (!Bone.HasParent())
-		{
-			CalcBoneLength(Param, Bone, RefBonePose);
-		}
-	}
-
-	for (FKawaiiPhysicsModifyBone& Bone : Param.ModifyBones)
-	{
-		Bone.LengthRateFromRoot = Param.TotalBoneLength > 0.0f ? Bone.LengthFromRoot / Param.TotalBoneLength : 0.0f;
-
-		Bone.bFixed = false;
-		Bone.bHasFollowBone = false;
-
-		if (!Bone.HasParent() && !Param.bRootBoneSimulate)
-		{
-			Bone.bFixed = true;
-		}
-
-		if (Param.bShouldFixTailBone && !Bone.bDummy)
-		{
-			const bool bHasRealChild = Bone.ChildIndices.ContainsByPredicate(
-				[&Param](int32 Index) { return !Param.ModifyBones[Index].bDummy; });
-			if (!bHasRealChild)
-			{
-				Bone.bFixed = true;
-			}
-		}
-
-		if (Param.FixedBone.BoneName != NAME_None && Bone.BoneRef.BoneName == Param.FixedBone.BoneName)
-		{
-			Bone.bFixed = true;
-		}
-
-		if (Param.FollowBone.BoneName != NAME_None && Bone.BoneRef.BoneName == Param.FollowBone.BoneName)
-		{
-			Bone.bHasFollowBone = true;
-			Param.FollowBoneIndex = Bone.Index;
+			AddRoot(AdditionalIndex, Additional.bUseOverrideExcludeBones
+				                         ? Additional.OverrideExcludeBones
+				                         : Param.ExcludeBones);
 		}
 	}
 
 	Param.bInitialized = true;
-	bInitPhysicsSettings = false;
-}
-
-void FAnimNode_KawaiiPhysicsMerge::InitBoneConstraints()
-{
-	MergedBoneConstraints.Reset();
-	MergedBoneConstraints.Append(BoneConstraints);
-	MergedBoneConstraints.Append(BoneConstraintsData);
-
-	// Constraints here may span chains, so bone lookup walks every chain and the
-	// resolved index is packed as (ChainIndex << 16) | BoneIndex.
-	auto FindBone = [this](const FName BoneName) -> int32
-	{
-		for (int32 ChainIndex = 0; ChainIndex < Nodes.Num(); ++ChainIndex)
-		{
-			const int32 BoneIndex = Nodes[ChainIndex].ModifyBones.IndexOfByPredicate(
-				[BoneName](const FKawaiiPhysicsModifyBone& Bone)
-				{
-					return !Bone.bDummy && Bone.BoneRef.BoneName == BoneName;
-				});
-
-			if (BoneIndex != INDEX_NONE)
-			{
-				return (ChainIndex << 16) | BoneIndex;
-			}
-		}
-
-		return INDEX_NONE;
-	};
-
-	for (FModifyBoneConstraint& Constraint : MergedBoneConstraints)
-	{
-		Constraint.ModifyBoneIndex1 = FindBone(Constraint.Bone1.BoneName);
-		Constraint.ModifyBoneIndex2 = FindBone(Constraint.Bone2.BoneName);
-		Constraint.Lambda = 0.0f;
-
-		if (!Constraint.IsBoneReferenceValid())
-		{
-			Constraint.Length = -1.0f;
-			continue;
-		}
-
-		const FKawaiiPhysicsModifyBone& Bone1 =
-			Nodes[Constraint.ModifyBoneIndex1 >> 16].ModifyBones[Constraint.ModifyBoneIndex1 & 0xFFFF];
-		const FKawaiiPhysicsModifyBone& Bone2 =
-			Nodes[Constraint.ModifyBoneIndex2 >> 16].ModifyBones[Constraint.ModifyBoneIndex2 & 0xFFFF];
-
-		Constraint.Length = (Bone1.PoseLocation - Bone2.PoseLocation).Size();
-	}
-}
-
-FKawaiiPhysicsModifyBone* FAnimNode_KawaiiPhysicsMerge::ResolvePackedBone(int32 PackedIndex)
-{
-	if (PackedIndex == INDEX_NONE)
-	{
-		return nullptr;
-	}
-
-	const int32 ChainIndex = PackedIndex >> 16;
-	const int32 BoneIndex = PackedIndex & 0xFFFF;
-
-	if (!Nodes.IsValidIndex(ChainIndex) || !Nodes[ChainIndex].ModifyBones.IsValidIndex(BoneIndex))
-	{
-		return nullptr;
-	}
-
-	return &Nodes[ChainIndex].ModifyBones[BoneIndex];
-}
-
-void FAnimNode_KawaiiPhysicsMerge::AdjustByBoneConstraintsMerged(int32 IterationCount)
-{
-	if (IterationCount <= 0 || MergedBoneConstraints.IsEmpty() || DeltaTime <= 0.0f)
-	{
-		return;
-	}
-
-	const float DeltaTimeSq = DeltaTime * DeltaTime;
-
-	for (FModifyBoneConstraint& Constraint : MergedBoneConstraints)
-	{
-		Constraint.Lambda = 0.0f;
-	}
-
-	for (int32 Iteration = 0; Iteration < IterationCount; ++Iteration)
-	{
-		for (FModifyBoneConstraint& Constraint : MergedBoneConstraints)
-		{
-			if (!Constraint.IsBoneReferenceValid() || !Constraint.IsValid())
-			{
-				continue;
-			}
-
-			FKawaiiPhysicsModifyBone* Bone1 = ResolvePackedBone(Constraint.ModifyBoneIndex1);
-			FKawaiiPhysicsModifyBone* Bone2 = ResolvePackedBone(Constraint.ModifyBoneIndex2);
-
-			if (!Bone1 || !Bone2)
-			{
-				continue;
-			}
-
-			const EXPBDComplianceType Compliance = Constraint.bOverrideCompliance
-				                                       ? Constraint.ComplianceType
-				                                       : BoneConstraintGlobalComplianceType;
-			const float AlphaTilde = KawaiiPhysics::GetComplianceValue(Compliance) / DeltaTimeSq;
-
-			KawaiiPhysics::SolveDistanceConstraint(*Bone1, *Bone2, Constraint.Length, AlphaTilde, Constraint.Lambda);
-		}
-	}
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -536,28 +456,42 @@ void FAnimNode_KawaiiPhysicsMerge::AdjustByBoneConstraintsMerged(int32 Iteration
 
 void FAnimNode_KawaiiPhysicsMerge::UpdatePhysicsSettingsOfModifyBones(FSingleNodeParameter& Param)
 {
+	// Game 0x7688860: the chain's values times the node's curves; LimitLinear and
+	// Gravity curves only when the chain has length. No bone-scale factor here.
+	const FKawaiiPhysicsSettings& Shared = Param.PhysicsSettings;
+	const bool bHasLength = Param.TotalBoneLength > 0.0f;
+
 	for (FKawaiiPhysicsModifyBone& Bone : Param.ModifyBones)
 	{
 		const float Rate = Bone.LengthRateFromRoot;
 		FKawaiiPhysicsSettings& Out = Bone.PhysicsSettings;
 
-		Out = Param.PhysicsSettings;
-		Out.Damping = EvalCurveMultiply(DampingCurveData, Rate, Param.PhysicsSettings.Damping);
-		Out.Stiffness = EvalCurveMultiply(StiffnessCurveData, Rate, Param.PhysicsSettings.Stiffness);
-		Out.WorldDampingLocation = EvalCurveMultiply(WorldDampingLocationCurveData, Rate,
-		                                     Param.PhysicsSettings.WorldDampingLocation);
-		Out.WorldDampingRotation = EvalCurveMultiply(WorldDampingRotationCurveData, Rate,
-		                                     Param.PhysicsSettings.WorldDampingRotation);
-		Out.Radius = EvalCurveMultiply(RadiusCurveData, Rate, Param.PhysicsSettings.Radius);
-		Out.LimitAngle = EvalCurveMultiply(LimitAngleCurveData, Rate, Param.PhysicsSettings.LimitAngle);
-		Out.LimitLinear = EvalCurveMultiply(LimitLinearCurveData, Rate, Param.PhysicsSettings.LimitLinear);
-		Out.GravityScale = EvalCurveMultiply(GravityCurveData, Rate, Param.PhysicsSettings.GravityScale);
+		Out = Shared;
+		Out.Damping = FMath::Clamp(EvalCurveMultiply(DampingCurveData, Rate, Shared.Damping), 0.0f, 1.0f);
+		Out.WorldDampingLocation = FMath::Clamp(
+			EvalCurveMultiply(WorldDampingLocationCurveData, Rate, Shared.WorldDampingLocation), 0.0f, 1.0f);
+		Out.WorldDampingRotation = FMath::Clamp(
+			EvalCurveMultiply(WorldDampingRotationCurveData, Rate, Shared.WorldDampingRotation), 0.0f, 1.0f);
+		Out.Stiffness = FMath::Clamp(EvalCurveMultiply(StiffnessCurveData, Rate, Shared.Stiffness), 0.0f, 1.0f);
+		Out.Radius = FMath::Max(0.0f, EvalCurveMultiply(RadiusCurveData, Rate, Shared.Radius));
 
-		Out.Damping = FMath::Clamp(Out.Damping, 0.0f, 1.0f);
-		Out.Stiffness = FMath::Clamp(Out.Stiffness, 0.0f, 1.0f);
-		Out.WorldDampingLocation = FMath::Clamp(Out.WorldDampingLocation, 0.0f, 1.0f);
-		Out.WorldDampingRotation = FMath::Clamp(Out.WorldDampingRotation, 0.0f, 1.0f);
-		Out.Radius = FMath::Max(0.0f, Out.Radius);
+		for (const FBoneShape& Shape : Param.CustomShapes)
+		{
+			if (Shape.ShapeType == EBoneShapeType::Capusle && Shape.DrivingBone.BoneName == Bone.BoneRef.BoneName)
+			{
+				Bone.ShapeHalfHeight = Shape.HalfHeight;
+				Bone.OffsetRotation = Shape.OffsetRotation.Quaternion();
+				break;
+			}
+		}
+
+		Out.LimitAngle = FMath::Max(0.0f, EvalCurveMultiply(LimitAngleCurveData, Rate, Shared.LimitAngle));
+		Out.LimitLinear = FMath::Max(0.0f, bHasLength
+			                                   ? EvalCurveMultiply(LimitLinearCurveData, Rate, Shared.LimitLinear)
+			                                   : Shared.LimitLinear);
+		Out.GravityScale = FMath::Max(0.0f, bHasLength
+			                                    ? EvalCurveMultiply(GravityCurveData, Rate, Shared.GravityScale)
+			                                    : Shared.GravityScale);
 	}
 }
 
@@ -565,11 +499,45 @@ void FAnimNode_KawaiiPhysicsMerge::UpdateModifyBonesPoseTransform(FSingleNodePar
                                                                   FComponentSpacePoseContext& Output,
                                                                   const FBoneContainer& BoneContainer)
 {
+	// As the main node's (the game's 0x7686D20 was only skimmed; it has the same
+	// virtual-parent, follow-target and shape-rotation updates).
+	if (Param.bRootBoneSimulate)
+	{
+		const FCompactPoseBoneIndex ParentCompact = Param.RootParentRef.GetCompactPoseIndex(BoneContainer);
+		if (Param.RootParentRef.IsValidToEvaluate(BoneContainer) && ParentCompact >= 0)
+		{
+			const FTransform ParentCS = Output.Pose.GetComponentSpaceTransform(ParentCompact);
+			FKawaiiPhysicsModifyBone& Virtual = Param.VirtualParentBone;
+			Virtual.PoseLocation = ParentCS.GetLocation();
+			Virtual.Location = Virtual.PoseLocation;
+			Virtual.PoseRotation = ParentCS.GetRotation();
+			Virtual.Rotation = Virtual.PoseRotation;
+			Virtual.PoseScale = ParentCS.GetScale3D();
+			Param.bHasVirtualParent = true;
+		}
+	}
+
 	for (FKawaiiPhysicsModifyBone& Bone : Param.ModifyBones)
 	{
 		if (!Bone.bDummy)
 		{
 			Bone.UpdatePoseTransform(BoneContainer, Output.Pose, ResetBoneTransformWhenBoneNotFound);
+
+			if (Bone.bFixed && Bone.bHasFollowBone)
+			{
+				Param.FollowBoneRef.Initialize(BoneContainer);
+				const FCompactPoseBoneIndex FollowCompact = Param.FollowBoneRef.GetCompactPoseIndex(BoneContainer);
+				if (Param.FollowBoneRef.IsValidToEvaluate(BoneContainer) && FollowCompact >= 0)
+				{
+					Param.FollowTargetTransform =
+						Param.FixedRefRelToFollow * Output.Pose.GetComponentSpaceTransform(FollowCompact);
+				}
+			}
+
+			if (Bone.ShapeHalfHeight > 1e-4f && !Bone.bBoneMissing)
+			{
+				Bone.ShapeRotation = Bone.PoseRotation * Bone.OffsetRotation;
+			}
 			continue;
 		}
 
@@ -586,116 +554,257 @@ void FAnimNode_KawaiiPhysicsMerge::UpdateModifyBonesPoseTransform(FSingleNodePar
 
 void FAnimNode_KawaiiPhysicsMerge::UpdateSkelCompMove(const FTransform& ComponentTransform)
 {
+	// Game 0x7689630: node-level here (not per chain); distance always tested,
+	// rotation when >= 0; ends by taking this frame as the reference.
 	SkelCompMoveVector = ComponentTransform.InverseTransformPosition(PreSkelCompTransform.GetLocation());
 	SkelCompMoveRotation = ComponentTransform.InverseTransformRotation(PreSkelCompTransform.GetRotation());
 
-	if (TeleportDistanceThreshold > 0.0f &&
-		SkelCompMoveVector.SizeSquared() > FMath::Square(TeleportDistanceThreshold))
+	if (SkelCompMoveVector.SizeSquared() > FMath::Square(TeleportDistanceThreshold))
 	{
 		SkelCompMoveVector = FVector::ZeroVector;
 	}
 
-	if (TeleportRotationThreshold > 0.0f &&
-		FMath::RadiansToDegrees(SkelCompMoveRotation.GetAngle()) > TeleportRotationThreshold)
+	const float MoveAngle = 2.0f * FMath::Acos(FMath::Clamp(static_cast<float>(SkelCompMoveRotation.W), -1.0f, 1.0f));
+	if (TeleportRotationThreshold >= 0.0f && FMath::RadiansToDegrees(MoveAngle) > TeleportRotationThreshold)
 	{
 		SkelCompMoveRotation = FQuat::Identity;
 	}
+
+	PreSkelCompTransform = ComponentTransform;
+}
+
+const FKawaiiPhysicsModifyBone* FAnimNode_KawaiiPhysicsMerge::GetSimParent(const FSingleNodeParameter& Param,
+                                                                           const FKawaiiPhysicsModifyBone& Bone)
+{
+	if (Param.ModifyBones.IsValidIndex(Bone.ParentIndex))
+	{
+		return &Param.ModifyBones[Bone.ParentIndex];
+	}
+	if (!Bone.HasParent() && Param.bRootBoneSimulate && Param.bHasVirtualParent)
+	{
+		return &Param.VirtualParentBone;
+	}
+	return nullptr;
+}
+
+void FAnimNode_KawaiiPhysicsMerge::SimulatePass(FComponentSpacePoseContext& Output,
+                                                const FTransform& ComponentTransform, int32 LODLevel)
+{
+	for (FSingleNodeParameter& Param : Nodes)
+	{
+		if ((LODLevel < 0 || Param.IsEnabledForLOD(LODLevel)) && !Param.ModifyBones.IsEmpty())
+		{
+			SimulateModifyBones(Param, Output, ComponentTransform);
+		}
+	}
+
+	DeltaTimeOld = DeltaTime;
 }
 
 void FAnimNode_KawaiiPhysicsMerge::SimulateModifyBones(FSingleNodeParameter& Param,
                                                        FComponentSpacePoseContext& Output,
                                                        const FTransform& ComponentTransform)
 {
+	// The game's SimulateModifyBones for this node (0x767E420) and its per-bone
+	// step (0x767AE60): the main node's, minus wave animation, custom forces,
+	// force Pre/PostApply, bone constraints, the relative-rotation limit and the
+	// spring restore.
 	if (DeltaTime <= 0.0f || Param.ModifyBones.IsEmpty())
 	{
 		return;
 	}
 
-	const float Exponent = TargetFramerate > 0 ? DeltaTime * TargetFramerate : 1.0f;
-	const FVector GravityCS = ComponentTransform.InverseTransformVector(Gravity);
+	TArray<FKawaiiPhysicsModifyBone>& Bones = Param.ModifyBones;
 
-	for (FKawaiiPhysicsModifyBone& Bone : Param.ModifyBones)
+	// Pre-pass.
+	bool bHasFixed = false;
+	for (FKawaiiPhysicsModifyBone& Bone : Bones)
+	{
+		Bone.bSkipSimulate = true;
+		if (Bone.bBoneMissing && !Bone.bDummy)
+		{
+			continue;
+		}
+		if (!Bone.HasParent() && !Param.bRootBoneSimulate)
+		{
+			Bone.PrevLocation = Bone.Location;
+			Bone.Location = Bone.PoseLocation;
+			continue;
+		}
+		if (Bone.bFixed)
+		{
+			Bone.PrevLocation = Bone.Location;
+			Bone.Location = Bone.PoseLocation;
+			bHasFixed = true;
+			continue;
+		}
+		Bone.bSkipSimulate = false;
+	}
+	const bool bFixTail = Param.bShouldFixTailBone && bHasFixed;
+
+	const float Exponent = TargetFramerate * DeltaTime;
+	const FVector GravityCS = ComponentTransform.InverseTransformVector(Gravity);
+	const FSceneInterface* WindScene =
+		(bEnableWind && ParentSkelComp) ? ParentSkelComp->GetScene() : nullptr;
+
+	for (FKawaiiPhysicsModifyBone& Bone : Bones)
 	{
 		if (!Bone.IsSimulated())
 		{
-			Bone.Location = Bone.PoseLocation;
-			Bone.PrevLocation = Bone.PoseLocation;
 			continue;
 		}
 
 		const FKawaiiPhysicsSettings& Settings = Bone.PhysicsSettings;
 
-		FVector Velocity = FVector::ZeroVector;
-		if (DeltaTimeOld > 0.0f)
-		{
-			Velocity = (Bone.Location - Bone.PrevLocation) / DeltaTimeOld;
-		}
+		const FVector FollowTarget = Bone.Location + SkelCompMoveVector +
+			(SkelCompMoveRotation.RotateVector(Bone.PrevLocation) - Bone.PrevLocation);
 
+		FVector Velocity = DeltaTimeOld > 0.0f ? (Bone.Location - Bone.PrevLocation) / DeltaTimeOld : FVector::ZeroVector;
 		Bone.PrevLocation = Bone.Location;
-		Velocity *= 1.0f - AdjustRateByExponent(Settings.Damping, Exponent);
+		Velocity *= 1.0f - Settings.Damping;
 
-		Bone.Location += Velocity * DeltaTime;
-		Bone.Location += GravityCS * Settings.GravityScale * DeltaTime * DeltaTime;
-		Bone.Location += SkelCompMoveVector * (1.0f - AdjustRateByExponent(Settings.WorldDampingLocation, Exponent));
-		Bone.Location += (SkelCompMoveRotation.RotateVector(Bone.Location) - Bone.Location) *
-			(1.0f - AdjustRateByExponent(Settings.WorldDampingRotation, Exponent));
-		Bone.Location += (Bone.PoseLocation - Bone.Location) * AdjustRateByExponent(Settings.Stiffness, Exponent);
-
-		// NOTE: the FInstancedStruct force presets on this node are serialized
-		// (they are part of the game's schema) but not evaluated here. Their
-		// virtuals are declared against FAnimNode_KawaiiPhysics and a chain, and
-		// this node has neither. Gravity and wind, which is what the Merge node
-		// is normally set up with, are applied directly above and below.
-	}
-
-	if (bEnableWind && ParentSkelComp && ParentSkelComp->GetScene())
-	{
-		const FSceneInterface* Scene = ParentSkelComp->GetScene();
-
-		for (FKawaiiPhysicsModifyBone& Bone : Param.ModifyBones)
+		if (WindScene)
 		{
-			if (!Bone.IsSimulated())
-			{
-				continue;
-			}
-
-			const FVector WorldLocation = ComponentTransform.TransformPosition(Bone.Location);
-
 			FVector WindDirection = FVector::ZeroVector;
 			float WindSpeed = 0.0f;
 			float WindMinGust = 0.0f;
 			float WindMaxGust = 0.0f;
-			Scene->GetWindParameters_GameThread(WorldLocation, WindDirection, WindSpeed, WindMinGust, WindMaxGust);
+			WindScene->GetWindParameters_GameThread(ComponentTransform.TransformPosition(Bone.PoseLocation),
+			                                        WindDirection, WindSpeed, WindMinGust, WindMaxGust);
 
-			const FVector WindCS =
-				ComponentTransform.InverseTransformVector(WindDirection * WindSpeed * WindScale);
-			Bone.Location += WindCS * DeltaTime * DeltaTime;
+			const FVector WindCS = ComponentTransform.InverseTransformVector(WindDirection) * WindSpeed * WindScale;
+			Velocity += WindCS * FMath::FRandRange(0.0f, 2.0f) * TargetFramerate;
 		}
-	}
 
-	// Orientation, derived from the final positions.
-	for (FKawaiiPhysicsModifyBone& Bone : Param.ModifyBones)
-	{
-		if (Bone.bDummy || Bone.ChildIndices.IsEmpty())
+		Bone.Location += Velocity * DeltaTime;
+		Bone.Location += SkelCompMoveVector * (1.0f - Settings.WorldDampingLocation);
+		Bone.Location += (SkelCompMoveRotation.RotateVector(Bone.PrevLocation) - Bone.PrevLocation) *
+			(1.0f - Settings.WorldDampingRotation);
+
+		// LimitLinear: the soft tanh clamp around the rigid-follow target.
+		if (Settings.LimitLinear > 0.0f && !Bone.Location.ContainsNaN() && !FollowTarget.ContainsNaN())
+		{
+			const FVector Offset = Bone.Location - FollowTarget;
+			const float Distance = Offset.Size();
+			if (Distance > 1e-8f)
+			{
+				const float E2R = FMath::Exp(2.0f * FMath::Min(Distance / Settings.LimitLinear, 3.0f));
+				Bone.Location = FollowTarget + Offset / Distance * ((E2R - 1.0f) / (E2R + 1.0f) * Settings.LimitLinear);
+			}
+		}
+
+		Bone.Location += 0.5f * GravityCS * Settings.GravityScale * DeltaTime * DeltaTime;
+
+		// External forces (game 0x767B626): the Merge-specific apply. No PreApply
+		// ever runs in this node, so each force uses the values it was loaded with.
+		for (FInstancedStruct& ForceStruct : ExternalForces)
+		{
+			FKawaiiPhysics_ExternalForce* Force = ForceStruct.GetMutablePtr<FKawaiiPhysics_ExternalForce>();
+			if (!Force || !Force->bIsEnabled)
+			{
+				continue;
+			}
+
+			FTransform BoneTM = FTransform::Identity;
+			if (Force->ExternalForceSpace == EExternalForceSpace::BoneSpace)
+			{
+				const FKawaiiPhysicsModifyBone* TransformBone = &Bone;
+				if (Bone.bDummy)
+				{
+					if (!Bones.IsValidIndex(Bone.ParentIndex))
+					{
+						continue;
+					}
+					TransformBone = &Bones[Bone.ParentIndex];
+				}
+				const FBoneContainer& BoneContainer = Output.Pose.GetPose().GetBoneContainer();
+				const FCompactPoseBoneIndex Compact = TransformBone->BoneRef.GetCompactPoseIndex(BoneContainer);
+				if (Compact >= 0)
+				{
+					BoneTM = Output.Pose.GetComponentSpaceTransform(Compact);
+				}
+			}
+			Force->ApplyMerge(Bone, DeltaTime, BoneTM);
+		}
+
+		if (bFixTail)
 		{
 			continue;
 		}
 
-		FVector ChildCentre = FVector::ZeroVector;
-		for (const int32 ChildIndex : Bone.ChildIndices)
+		FVector BaseLocation = Bone.PoseLocation;
+		if (Bones.IsValidIndex(Bone.ParentIndex))
 		{
-			ChildCentre += Param.ModifyBones[ChildIndex].Location;
+			const FKawaiiPhysicsModifyBone& ParentBone = Bones[Bone.ParentIndex];
+			BaseLocation = ParentBone.Location + (Bone.PoseLocation - ParentBone.PoseLocation);
 		}
-		ChildCentre /= static_cast<float>(Bone.ChildIndices.Num());
+		Bone.Location += (BaseLocation - Bone.Location) * AdjustRateByExponent(Settings.Stiffness, Exponent);
+	}
 
-		const FVector PoseDirection = GetForwardVector(Bone.PoseRotation, Param.BoneForwardAxis);
-		const FVector SimDirection = (ChildCentre - Bone.Location).GetSafeNormal();
+	// Fix-tail re-solve. The Merge node's own blocks (0x767E859 / 0x767F8ED) were
+	// located but not decoded; the main node's decoded algorithm is used.
+	const FKawaiiPhysicsModifyBone* Virtual =
+		Param.bRootBoneSimulate && Param.bHasVirtualParent ? &Param.VirtualParentBone : nullptr;
+	if (bFixTail)
+	{
+		KawaiiPhysics::FixTailStiffnessSweep(Bones, Param.TotalBoneLength,
+		                                     Param.FollowTargetTransform.GetLocation(), Exponent);
+	}
 
-		if (!SimDirection.IsNearlyZero() && !PoseDirection.IsNearlyZero())
+	for (FKawaiiPhysicsModifyBone& Bone : Bones)
+	{
+		if (!Bone.IsSimulated())
 		{
-			Bone.PrevRotation = Bone.Rotation;
-			Bone.Rotation = FQuat::FindBetweenNormals(PoseDirection, SimDirection) * Bone.PoseRotation;
+			continue;
 		}
+
+		KawaiiPhysics::AdjustBySphereCollision(Bone, SphericalLimits);
+		KawaiiPhysics::AdjustBySphereCollision(Bone, SphericalLimitsData);
+		KawaiiPhysics::AdjustByCapsuleCollision(Bone, CapsuleLimits);
+		KawaiiPhysics::AdjustByCapsuleCollision(Bone, CapsuleLimitsData);
+		KawaiiPhysics::AdjustByBoxCollision(Bone, BoxLimits);
+		KawaiiPhysics::AdjustByBoxCollision(Bone, BoxLimitsData);
+		KawaiiPhysics::AdjustByPlanerCollision(Bone, PlanarLimits);
+		KawaiiPhysics::AdjustByPlanerCollision(Bone, PlanarLimitsData);
+		// NOT PORTED: world collision (game 0x766E060, not decoded).
+	}
+
+	// The game only clears the constraint multipliers here; it never solves the
+	// Merge node's bone constraints (0x767F695).
+	if (BoneConstraintIterationCountAfterCollision > 0)
+	{
+		for (FModifyBoneConstraint& Constraint : MergedBoneConstraints)
+		{
+			Constraint.Lambda = 0.0f;
+		}
+	}
+
+	for (FKawaiiPhysicsModifyBone& Bone : Bones)
+	{
+		if (!Bone.IsSimulated())
+		{
+			continue;
+		}
+
+		const FKawaiiPhysicsModifyBone* Parent = GetSimParent(Param, Bone);
+		if (!Parent)
+		{
+			continue;
+		}
+
+		KawaiiPhysics::AdjustByAngleLimit(Bone, *Parent);
+		KawaiiPhysics::AdjustByPlanarConstraint(Bone, *Parent, PlanarConstraint);
+
+		if (!bFixTail)
+		{
+			const float BoneLength = (Bone.PoseLocation - Parent->PoseLocation).Size();
+			Bone.Location = Parent->Location + (Bone.Location - Parent->Location).GetSafeNormal() * BoneLength;
+		}
+	}
+
+	if (bFixTail)
+	{
+		KawaiiPhysics::FixTailLengthSweep(Bones, Param.TotalBoneLength, Virtual);
 	}
 }
 
@@ -704,6 +813,40 @@ void FAnimNode_KawaiiPhysicsMerge::ApplySimulateResult(FSingleNodeParameter& Par
                                                        const FBoneContainer& BoneContainer,
                                                        TArray<FBoneTransform>& OutBoneTransforms)
 {
+	// Game 0x7672C70: the same rule as the main node's ApplySimulateResult.
+	for (FKawaiiPhysicsModifyBone& Bone : Param.ModifyBones)
+	{
+		Bone.PrevRotation = Bone.Rotation;
+		Bone.Rotation = Bone.PoseRotation;
+		Bone.bKeepPoseLocation = false;
+	}
+
+	for (int32 Index = Param.bRootBoneSimulate ? 0 : 1; Index < Param.ModifyBones.Num(); ++Index)
+	{
+		FKawaiiPhysicsModifyBone& Bone = Param.ModifyBones[Index];
+		FKawaiiPhysicsModifyBone* ParentBone = const_cast<FKawaiiPhysicsModifyBone*>(GetSimParent(Param, Bone));
+		const bool bRealParent = ParentBone && ParentBone != &Param.VirtualParentBone && !ParentBone->bBoneMissing;
+
+		if (bRealParent && ParentBone->ChildIndices.Num() <= 1)
+		{
+			const FVector PoseVector = Bone.PoseLocation - ParentBone->PoseLocation;
+			const FVector SimulateVector = Bone.Location - ParentBone->Location;
+			if (PoseVector.GetSafeNormal() == SimulateVector.GetSafeNormal())
+			{
+				Bone.bKeepPoseLocation = true;
+				continue;
+			}
+
+			ParentBone->Rotation = KawaiiPhysics::GameFindBetweenVectors(PoseVector, SimulateVector) *
+				ParentBone->PoseRotation;
+		}
+
+		if (Bone.bFixed && Bone.bHasFollowBone && !Bone.bDummy)
+		{
+			Bone.Rotation = Param.FollowTargetTransform.GetRotation();
+		}
+	}
+
 	for (const FKawaiiPhysicsModifyBone& Bone : Param.ModifyBones)
 	{
 		if (Bone.bDummy || Bone.bBoneMissing)
@@ -724,48 +867,22 @@ void FAnimNode_KawaiiPhysicsMerge::ApplySimulateResult(FSingleNodeParameter& Par
 		}
 
 		FTransform NewTransform = Output.Pose.GetComponentSpaceTransform(CompactPoseIndex);
-		NewTransform.SetLocation(Bone.Location);
+		NewTransform.SetLocation(Bone.bKeepPoseLocation ? Bone.PoseLocation : Bone.Location);
 		NewTransform.SetRotation(Bone.Rotation);
 
 		OutBoneTransforms.Add(FBoneTransform(CompactPoseIndex, NewTransform));
 	}
 }
 
-void FAnimNode_KawaiiPhysicsMerge::WarmUp(FComponentSpacePoseContext& Output, const FBoneContainer& BoneContainer,
-                                          FTransform& ComponentTransform)
-{
-	const float WarmUpDeltaTime = 1.0f / FMath::Max(1, TargetFramerate);
-
-	const float SavedDeltaTime = DeltaTime;
-	const float SavedDeltaTimeOld = DeltaTimeOld;
-	const FVector SavedMoveVector = SkelCompMoveVector;
-	const FQuat SavedMoveRotation = SkelCompMoveRotation;
-
-	DeltaTime = WarmUpDeltaTime;
-	DeltaTimeOld = WarmUpDeltaTime;
-	SkelCompMoveVector = FVector::ZeroVector;
-	SkelCompMoveRotation = FQuat::Identity;
-
-	for (int32 Frame = 0; Frame < WarmUpFrames; ++Frame)
-	{
-		for (FSingleNodeParameter& Param : Nodes)
-		{
-			if (Param.IsEnabledForLOD(CachedLODLevel) && !Param.ModifyBones.IsEmpty())
-			{
-				SimulateModifyBones(Param, Output, ComponentTransform);
-			}
-		}
-	}
-
-	DeltaTime = SavedDeltaTime;
-	DeltaTimeOld = SavedDeltaTimeOld;
-	SkelCompMoveVector = SavedMoveVector;
-	SkelCompMoveRotation = SavedMoveRotation;
-}
-
 void FAnimNode_KawaiiPhysicsMerge::EvaluateSkeletalControl_AnyThread(FComponentSpacePoseContext& Output,
                                                                      TArray<FBoneTransform>& OutBoneTransforms)
 {
+	// The game's order (0x7674F60).
+	if (DeltaTime <= 0.0f)
+	{
+		return;   // no output at all; the incoming pose passes through
+	}
+
 	const FBoneContainer& BoneContainer = Output.Pose.GetPose().GetBoneContainer();
 	FTransform ComponentTransform = Output.AnimInstanceProxy->GetComponentTransform();
 
@@ -773,118 +890,84 @@ void FAnimNode_KawaiiPhysicsMerge::EvaluateSkeletalControl_AnyThread(FComponentS
 	LastEvaluatedTime = FPlatformTime::Seconds();
 #endif
 
-	UpdateSkelCompMove(ComponentTransform);
-
-	// The whole point of this node: one limit resolution shared by every chain.
-	const FTransform ParentCompTransform = ParentSkelComp && ParentSkelComp->GetAttachParent()
-		                                       ? ParentSkelComp->GetAttachParent()->GetComponentTransform()
-		                                       : ComponentTransform;
-
-	KawaiiPhysics::ResolveAllLimits(SphericalLimits, CapsuleLimits, BoxLimits, PlanarLimits,
-	                                Output, BoneContainer, ComponentTransform, ParentCompTransform);
-	KawaiiPhysics::ResolveAllLimits(SphericalLimitsData, CapsuleLimitsData, BoxLimitsData, PlanarLimitsData,
-	                                Output, BoneContainer, ComponentTransform, ParentCompTransform);
-
-	bool bAnyRebuilt = false;
-
-	for (FSingleNodeParameter& Param : Nodes)
-	{
-		if (!Param.IsEnabledForLOD(CachedLODLevel) || !Param.RootBone.IsValidToEvaluate(BoneContainer))
-		{
-			continue;
-		}
-
-		if (!Param.bInitialized || Param.ModifyBones.IsEmpty())
-		{
-			InitModifyBones(Param, Output, BoneContainer);
-			bAnyRebuilt = true;
-			if (Param.ModifyBones.IsEmpty())
-			{
-				continue;
-			}
-		}
-
-		UpdateModifyBonesPoseTransform(Param, Output, BoneContainer);
-
-		if (bResetDynamics)
-		{
-			for (FKawaiiPhysicsModifyBone& Bone : Param.ModifyBones)
-			{
-				Bone.Location = Bone.PoseLocation;
-				Bone.PrevLocation = Bone.PoseLocation;
-				Bone.Rotation = Bone.PoseRotation;
-				Bone.PrevRotation = Bone.PoseRotation;
-			}
-		}
-
-		if (bUpdatePhysicsSettingsInGame || !bInitPhysicsSettings)
-		{
-			UpdatePhysicsSettingsOfModifyBones(Param);
-		}
-	}
-
-	// Constraints span chains, so they are rebuilt only once every chain is up.
-	if (bAnyRebuilt)
-	{
-		InitBoneConstraints();
-	}
-
-	const bool bWantWarmUp = (bNeedWarmUp && WarmUpFrames > 0) &&
-		(!bInitPhysicsSettings || (bResetDynamics && bUseWarmUpWhenResetDynamics));
-
-	if (bWantWarmUp)
-	{
-		WarmUp(Output, BoneContainer, ComponentTransform);
-	}
-	else
+	if (bResetDynamics)
 	{
 		for (FSingleNodeParameter& Param : Nodes)
 		{
-			if (Param.IsEnabledForLOD(CachedLODLevel) && !Param.ModifyBones.IsEmpty())
-			{
-				SimulateModifyBones(Param, Output, ComponentTransform);
-			}
+			Param.ModifyBones.Empty();
 		}
+		bResetDynamics = false;
+		bInitPhysicsSettings = false;
 	}
 
-	// Constraints, then collision, then constraints again -- all across every
-	// chain at once, which is what makes this cheaper than N separate nodes.
-	AdjustByBoneConstraintsMerged(BoneConstraintIterationCountBeforeCollision);
-
-	for (FSingleNodeParameter& Param : Nodes)
+	// Any LOD-enabled chain with an invalid root (or additional root) stops the
+	// whole node for this frame.
+	for (const FSingleNodeParameter& Param : Nodes)
 	{
 		if (!Param.IsEnabledForLOD(CachedLODLevel))
 		{
 			continue;
 		}
-
-		for (FKawaiiPhysicsModifyBone& Bone : Param.ModifyBones)
+		if (!Param.RootBone.IsValidToEvaluate(BoneContainer) ||
+			Param.AdditionalRootBones.ContainsByPredicate([&BoneContainer](const FKawaiiPhysicsRootBoneSetting& Additional)
+			{
+				return !Additional.RootBone.IsValidToEvaluate(BoneContainer);
+			}))
 		{
-			if (!Bone.IsSimulated())
-			{
-				continue;
-			}
-
-			KawaiiPhysics::AdjustBySphereCollision(Bone, SphericalLimits);
-			KawaiiPhysics::AdjustBySphereCollision(Bone, SphericalLimitsData);
-			KawaiiPhysics::AdjustByCapsuleCollision(Bone, CapsuleLimits);
-			KawaiiPhysics::AdjustByCapsuleCollision(Bone, CapsuleLimitsData);
-			KawaiiPhysics::AdjustByBoxCollision(Bone, BoxLimits);
-			KawaiiPhysics::AdjustByBoxCollision(Bone, BoxLimitsData);
-			KawaiiPhysics::AdjustByPlanerCollision(Bone, PlanarLimits);
-			KawaiiPhysics::AdjustByPlanerCollision(Bone, PlanarLimitsData);
-
-			if (Bone.HasParent())
-			{
-				KawaiiPhysics::AdjustByAngleLimit(Bone, Param.ModifyBones[Bone.ParentIndex]);
-			}
-
-			KawaiiPhysics::AdjustByLinearLimit(Bone);
-			KawaiiPhysics::AdjustByPlanarConstraint(Bone, PlanarConstraint);
+			return;
 		}
 	}
 
-	AdjustByBoneConstraintsMerged(BoneConstraintIterationCountAfterCollision);
+	for (FSingleNodeParameter& Param : Nodes)
+	{
+		if (!Param.IsEnabledForLOD(CachedLODLevel) || (Param.bInitialized && !Param.ModifyBones.IsEmpty()))
+		{
+			continue;
+		}
+
+		InitModifyBones(Param, Output, BoneContainer);
+		if (!Param.ModifyBones.IsEmpty())
+		{
+			bInitPhysicsSettings = false;
+		}
+		PreSkelCompTransform = ComponentTransform;
+	}
+
+	if (!bInitPhysicsSettings || bUpdatePhysicsSettingsInGame)
+	{
+		for (FSingleNodeParameter& Param : Nodes)
+		{
+			UpdatePhysicsSettingsOfModifyBones(Param);
+		}
+		bInitPhysicsSettings = true;
+	}
+
+	// One limit resolution shared by every chain (always, unlike the main node).
+	// No bUseParentCompBone path and no bone scale in this node.
+	KawaiiPhysics::ResolveAllLimits(SphericalLimits, CapsuleLimits, BoxLimits, PlanarLimits,
+	                                Output, BoneContainer, false);
+	KawaiiPhysics::ResolveAllLimits(SphericalLimitsData, CapsuleLimitsData, BoxLimitsData, PlanarLimitsData,
+	                                Output, BoneContainer, false);
+
+	for (FSingleNodeParameter& Param : Nodes)
+	{
+		if (Param.IsEnabledForLOD(CachedLODLevel) && !Param.ModifyBones.IsEmpty())
+		{
+			UpdateModifyBonesPoseTransform(Param, Output, BoneContainer);
+		}
+	}
+
+	UpdateSkelCompMove(ComponentTransform);
+
+	if (bNeedWarmUp && WarmUpFrames > 0)
+	{
+		for (int32 Frame = 0; Frame < WarmUpFrames; ++Frame)
+		{
+			SimulatePass(Output, ComponentTransform, INDEX_NONE);
+		}
+		bNeedWarmUp = false;
+	}
+	SimulatePass(Output, ComponentTransform, CachedLODLevel);
 
 	for (FSingleNodeParameter& Param : Nodes)
 	{
@@ -893,11 +976,6 @@ void FAnimNode_KawaiiPhysicsMerge::EvaluateSkeletalControl_AnyThread(FComponentS
 			ApplySimulateResult(Param, Output, BoneContainer, OutBoneTransforms);
 		}
 	}
-
-	bInitPhysicsSettings = true;
-	bResetDynamics = false;
-	DeltaTimeOld = DeltaTime;
-	PreSkelCompTransform = ComponentTransform;
 
 	OutBoneTransforms.Sort(FCompareBoneTransformIndex());
 }

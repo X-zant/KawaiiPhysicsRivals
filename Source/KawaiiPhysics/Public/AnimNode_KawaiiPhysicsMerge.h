@@ -85,12 +85,25 @@ struct KAWAIIPHYSICS_API FSingleNodeParameter
 
 	// --- runtime-only scratch; no schema index ---
 
-	int32 FollowBoneIndex = INDEX_NONE;
+	/** The skeleton parent of RootBone (game: param +0xB8) and the virtual parent a simulated root is solved
+	 *  against (game: param +0xD0). */
+	FBoneReference RootParentRef;
+	FKawaiiPhysicsModifyBone VirtualParentBone;
+	bool bHasVirtualParent = false;
+
+	/** Fixed/follow bone state (game: param +0x260 follow ref, +0x280 follow target, +0x2E0 fixed-relative-to-
+	 *  follow reference transform). */
+	FBoneReference FollowBoneRef;
+	FTransform FollowTargetTransform = FTransform::Identity;
+	FTransform FixedRefRelToFollow = FTransform::Identity;
+
+	/** Cleared (e.g. by the editor) to force the chain to be rebuilt. */
 	bool bInitialized = false;
 
+	/** The game's rule: a chain runs when its threshold is -1 or >= the current LOD. */
 	bool IsEnabledForLOD(int32 InLODLevel) const
 	{
-		return AutoConfiguredLODThreshold < 0 || InLODLevel < AutoConfiguredLODThreshold;
+		return AutoConfiguredLODThreshold == -1 || AutoConfiguredLODThreshold >= InLODLevel;
 	}
 };
 
@@ -399,19 +412,6 @@ protected:
 	                    const TArray<FBoneReference>& InExcludeBones);
 	void CalcBoneLength(FSingleNodeParameter& Param, FKawaiiPhysicsModifyBone& Bone,
 	                    const TArray<FTransform>& RefBonePose);
-	void InitBoneConstraints();
-
-	/**
-	 * Solves MergedBoneConstraints across every chain at once.
-	 *
-	 * Constraint bone indices here are packed as (ChainIndex << 16) | BoneIndex,
-	 * because a constraint may join bones that live in two different chains --
-	 * that cross-chain case is the reason this node exists.
-	 */
-	void AdjustByBoneConstraintsMerged(int32 IterationCount);
-
-	/** Unpacks a packed constraint index; returns nullptr if it does not resolve. */
-	FKawaiiPhysicsModifyBone* ResolvePackedBone(int32 PackedIndex);
 
 	void UpdatePhysicsSettingsOfModifyBones(FSingleNodeParameter& Param);
 	void UpdateModifyBonesPoseTransform(FSingleNodeParameter& Param, FComponentSpacePoseContext& Output,
@@ -421,6 +421,8 @@ protected:
 	                         const FTransform& ComponentTransform);
 	void ApplySimulateResult(FSingleNodeParameter& Param, FComponentSpacePoseContext& Output,
 	                         const FBoneContainer& BoneContainer, TArray<FBoneTransform>& OutBoneTransforms);
-	void WarmUp(FComponentSpacePoseContext& Output, const FBoneContainer& BoneContainer,
-	            FTransform& ComponentTransform);
+	/** One pass over every chain, then DeltaTimeOld = DeltaTime (game 0x7680832). LODLevel < 0: every chain. */
+	void SimulatePass(FComponentSpacePoseContext& Output, const FTransform& ComponentTransform, int32 LODLevel);
+	static const FKawaiiPhysicsModifyBone* GetSimParent(const FSingleNodeParameter& Param,
+	                                                    const FKawaiiPhysicsModifyBone& Bone);
 };

@@ -12,7 +12,17 @@
 #include "AnimGraphNode_Constraint.h"
 #include "AnimGraphNode_CopyBone.h"
 #include "AnimGraphNode_ModifyBone.h"
+#include "AnimGraphNode_ApplyAdditive.h"
+#include "AnimGraphNode_BlendBoneByChannel.h"
+#include "AnimGraphNode_BlendListByInt.h"
+#include "AnimGraphNode_ComponentToLocalSpace.h"
+#include "AnimGraphNode_LayeredBoneBlend.h"
+#include "AnimGraphNode_LocalToComponentSpace.h"
 #include "AnimGraphNode_PoseDriver.h"
+#include "AnimGraphNode_SaveCachedPose.h"
+#include "AnimGraphNode_SequencePlayer.h"
+#include "AnimGraphNode_UseCachedPose.h"
+#include "AnimGraphNode_SpringBone.h"
 #include "Animation/AnimBlueprint.h"
 #include "Animation/PoseAsset.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -20,6 +30,7 @@
 #include "BoneControllers/AnimNode_Constraint.h"
 #include "BoneControllers/AnimNode_CopyBone.h"
 #include "BoneControllers/AnimNode_ModifyBone.h"
+#include "BoneControllers/AnimNode_SpringBone.h"
 #include "UObject/Package.h"
 #include "Misc/PackageName.h"
 #include "UObject/SavePackage.h"
@@ -171,20 +182,214 @@ namespace
 		}
 	}
 
-	/** Reads ComponentPose.LinkID, which indexes the class's anim-node property list. */
-	int32 ReadComponentPoseLinkId(const TSharedPtr<FJsonObject>& NodeObject)
+	/** One pose input on a node: the pin it arrives on and the node it comes from. */
+	struct FPoseInput
 	{
-		const TSharedPtr<FJsonObject>* PoseObject = nullptr;
-		if (NodeObject->TryGetObjectField(TEXT("ComponentPose"), PoseObject) && PoseObject)
+		FName PinName;
+		int32 SourceLinkIndex = INDEX_NONE;
+	};
+
+	/**
+	 * Reads every pose input a node has and strips its LinkID from the JSON.
+	 *
+	 * An input is any field holding an object with a LinkID -- ComponentPose,
+	 * LocalPose, SourcePose, Base/Additive, A/B, Pose... -- or an array of
+	 * them (BlendPose, BlendPoses). Pin names follow the engine's rule
+	 * (UAnimGraphNode_Base::CreatePinsForPoseLink): the property name, with
+	 * "_<index>" for an array element.
+	 *
+	 * The links are graph topology and are restored as pin connections, so
+	 * they are removed from the data: a single input is dropped outright, and
+	 * an array keeps its entries (emptied) because its LENGTH is what makes the
+	 * graph node create that many input pins.
+	 *
+	 * A use-cached-pose node's LinkToCachingNode is not a pin -- it names the
+	 * save node it reads -- and is returned separately.
+	 */
+	void CollectPoseInputs(const TSharedPtr<FJsonObject>& NodeObject, TArray<FPoseInput>& OutInputs,
+	                       int32& OutCacheLinkIndex)
+	{
+		OutCacheLinkIndex = INDEX_NONE;
+
+		auto ReadLinkId = [](const TSharedPtr<FJsonValue>& Value, int32& OutLinkId)
 		{
-			int32 LinkId = INDEX_NONE;
-			if ((*PoseObject)->TryGetNumberField(TEXT("LinkID"), LinkId))
+			if (!Value.IsValid() || Value->Type != EJson::Object)
 			{
-				return LinkId;
+				return false;
+			}
+			return Value->AsObject()->TryGetNumberField(TEXT("LinkID"), OutLinkId);
+		};
+
+		TArray<FString> Keys;
+		NodeObject->Values.GetKeys(Keys);
+		for (const FString& Key : Keys)
+		{
+			const TSharedPtr<FJsonValue> Value = NodeObject->Values.FindRef(Key);
+
+			int32 LinkId = INDEX_NONE;
+			if (ReadLinkId(Value, LinkId))
+			{
+				if (Key == TEXT("LinkToCachingNode"))
+				{
+					OutCacheLinkIndex = LinkId;
+				}
+				else
+				{
+					OutInputs.Add({FName(*Key), LinkId});
+				}
+				NodeObject->RemoveField(Key);
+				continue;
+			}
+
+			if (!Value.IsValid() || Value->Type != EJson::Array)
+			{
+				continue;
+			}
+
+			const TArray<TSharedPtr<FJsonValue>>& Elements = Value->AsArray();
+			TArray<TSharedPtr<FJsonValue>> Emptied;
+			bool bIsPoseArray = false;
+			for (int32 Index = 0; Index < Elements.Num(); ++Index)
+			{
+				if (ReadLinkId(Elements[Index], LinkId))
+				{
+					bIsPoseArray = true;
+					OutInputs.Add({FName(*FString::Printf(TEXT("%s_%d"), *Key, Index)), LinkId});
+					Emptied.Add(MakeShared<FJsonValueObject>(MakeShared<FJsonObject>()));
+				}
+				else
+				{
+					Emptied.Add(Elements[Index]);
+				}
+			}
+			if (bIsPoseArray)
+			{
+				NodeObject->SetArrayField(Key, Emptied);
+			}
+		}
+	}
+
+	/**
+	 * Recovers each node's FOLDED properties.
+	 *
+	 * Anim node properties marked FoldProperty (blend times and types, sequence
+	 * player settings...) are moved out of the node when the AnimBlueprint is
+	 * compiled, into one constant-data struct shared by the class. The export
+	 * keeps the map back: AnimNodeData[node].Entries[slot] is an index into the
+	 * constant-data struct's properties (0xFFFFFFFF if that property is not
+	 * folded), where slot comes from NodeTypeMap[node struct]. The values
+	 * themselves are in the defaults' SerializedSparseClassData. NodeIndex is
+	 * the node's position in the class's anim-node list -- the same order
+	 * LinkID uses.
+	 *
+	 * Returns, per node index, an object of { property name: value }.
+	 */
+	TArray<TSharedPtr<FJsonObject>> BuildFoldedValues(const TSharedPtr<FJsonObject>& ClassExport,
+	                                                  const TSharedPtr<FJsonObject>& DefaultsExport,
+	                                                  const TSharedPtr<FJsonObject>& ConstantDataExport,
+	                                                  const TArray<FString>& NodeStructTypes)
+	{
+		TArray<TSharedPtr<FJsonObject>> Folded;
+		for (int32 Index = 0; Index < NodeStructTypes.Num(); ++Index)
+		{
+			Folded.Add(MakeShared<FJsonObject>());
+		}
+
+		const TSharedPtr<FJsonObject>* ClassProperties = nullptr;
+		const TSharedPtr<FJsonObject>* Sparse = nullptr;
+		const TArray<TSharedPtr<FJsonValue>>* ConstantChildren = nullptr;
+		if (!ConstantDataExport.IsValid() ||
+			!ClassExport->TryGetObjectField(TEXT("Properties"), ClassProperties) ||
+			!DefaultsExport->TryGetObjectField(TEXT("SerializedSparseClassData"), Sparse) ||
+			!ConstantDataExport->TryGetArrayField(TEXT("ChildProperties"), ConstantChildren))
+		{
+			return Folded;
+		}
+
+		TArray<FString> ConstantNames;
+		for (const TSharedPtr<FJsonValue>& Child : *ConstantChildren)
+		{
+			FString Name;
+			if (Child.IsValid() && Child->Type == EJson::Object)
+			{
+				Child->AsObject()->TryGetStringField(TEXT("Name"), Name);
+			}
+			ConstantNames.Add(Name);
+		}
+
+		// "Class'/Script/Engine.AnimNode_Root'" -> { "Result": 3, "Name": 4, ... }
+		TMap<FString, TMap<FString, int32>> SlotsByStruct;
+		const TArray<TSharedPtr<FJsonValue>>* TypeMap = nullptr;
+		if ((*ClassProperties)->TryGetArrayField(TEXT("NodeTypeMap"), TypeMap))
+		{
+			for (const TSharedPtr<FJsonValue>& Entry : *TypeMap)
+			{
+				const TSharedPtr<FJsonObject> EntryObject = Entry->AsObject();
+				FString Key = EntryObject->GetStringField(TEXT("Key"));
+				int32 Dot = INDEX_NONE;
+				Key.FindLastChar(TEXT('.'), Dot);
+				Key = Key.Mid(Dot + 1).Replace(TEXT("'"), TEXT(""));
+
+				TMap<FString, int32>& Slots = SlotsByStruct.Add(Key);
+				const TSharedPtr<FJsonObject>* MapValue = nullptr;
+				const TArray<TSharedPtr<FJsonValue>>* NameToIndex = nullptr;
+				if (EntryObject->TryGetObjectField(TEXT("Value"), MapValue) &&
+					(*MapValue)->TryGetArrayField(TEXT("NameToIndexMap"), NameToIndex))
+				{
+					for (const TSharedPtr<FJsonValue>& Pair : *NameToIndex)
+					{
+						Slots.Add(Pair->AsObject()->GetStringField(TEXT("Key")),
+						          static_cast<int32>(Pair->AsObject()->GetNumberField(TEXT("Value"))));
+					}
+				}
 			}
 		}
 
-		return INDEX_NONE;
+		const TArray<TSharedPtr<FJsonValue>>* NodeData = nullptr;
+		if (!(*ClassProperties)->TryGetArrayField(TEXT("AnimNodeData"), NodeData))
+		{
+			return Folded;
+		}
+
+		for (const TSharedPtr<FJsonValue>& DataValue : *NodeData)
+		{
+			const TSharedPtr<FJsonObject> Data = DataValue->AsObject();
+			const int32 NodeIndex = static_cast<int32>(Data->GetNumberField(TEXT("NodeIndex")));
+			const TArray<TSharedPtr<FJsonValue>>* Entries = nullptr;
+			if (!NodeStructTypes.IsValidIndex(NodeIndex) || !Data->TryGetArrayField(TEXT("Entries"), Entries))
+			{
+				continue;
+			}
+
+			const TMap<FString, int32>* Slots = SlotsByStruct.Find(NodeStructTypes[NodeIndex]);
+			if (!Slots)
+			{
+				continue;
+			}
+
+			for (const TPair<FString, int32>& Slot : *Slots)
+			{
+				// The node function hooks are folded too, but are not settings.
+				if (Slot.Key.EndsWith(TEXT("Function")) || !Entries->IsValidIndex(Slot.Value))
+				{
+					continue;
+				}
+
+				const double ConstantIndex = (*Entries)[Slot.Value]->AsNumber();
+				if (ConstantIndex < 0 || ConstantIndex >= ConstantNames.Num())
+				{
+					continue; // 0xFFFFFFFF: not folded, the value is on the node itself
+				}
+
+				if (const TSharedPtr<FJsonValue> Value =
+					(*Sparse)->Values.FindRef(ConstantNames[static_cast<int32>(ConstantIndex)]))
+				{
+					Folded[NodeIndex]->SetField(Slot.Key, Value);
+				}
+			}
+		}
+
+		return Folded;
 	}
 
 	/** "EBoneForwardAxis::X_Positive" -> "X_Positive", which is what the converter wants. */
@@ -309,11 +514,13 @@ namespace
 
 		// A PoseAsset without a skeleton cannot be opened in the editor, which
 		// makes the stub look broken rather than empty.
-		if (UPoseAsset* PoseAsset = Cast<UPoseAsset>(Stub))
+		if (UAnimationAsset* AnimationAsset = Cast<UAnimationAsset>(Stub))
 		{
+			// Pose assets and sequences (a Sequence Player's animation) cannot be
+			// opened without a skeleton.
 			if (FallbackSkeleton)
 			{
-				PoseAsset->SetSkeleton(FallbackSkeleton);
+				AnimationAsset->SetSkeleton(FallbackSkeleton);
 			}
 		}
 
@@ -459,8 +666,32 @@ namespace
 
 		case EJson::String:
 		{
+			const FString& Text = Value->AsString();
+
+			// JSON has no NaN/Infinity, so some writers emit them as strings
+			// (CUE4Parse/Newtonsoft does, for an uninitialised float). Drop the
+			// field and keep the default rather than fail the conversion.
+			if (Text == TEXT("NaN") || Text == TEXT("Infinity") || Text == TEXT("-Infinity"))
+			{
+				return nullptr;
+			}
+
+			// FModel writes an FGuid as four 8-digit groups ("C34B2A45-498A6B7F-
+			// A4CDD79D-F3D94FAC"), which FGuid's parser rejects -- and one bad
+			// field aborts the whole node. Drop the hyphens: 32 hex digits is a
+			// form it accepts.
+			if (Text.Len() == 35 && Text[8] == TEXT('-') && Text[17] == TEXT('-') && Text[26] == TEXT('-'))
+			{
+				const FString Digits = Text.Replace(TEXT("-"), TEXT(""));
+				FGuid Parsed;
+				if (FGuid::Parse(Digits, Parsed))
+				{
+					return MakeShared<FJsonValueString>(Digits);
+				}
+			}
+
 			FString Stripped;
-			if (TryStripEnumQualifier(Value->AsString(), Stripped))
+			if (TryStripEnumQualifier(Text, Stripped))
 			{
 				return MakeShared<FJsonValueString>(Stripped);
 			}
@@ -817,6 +1048,8 @@ FKawaiiPhysicsJsonImportResult UKawaiiPhysicsJsonImporter::ImportIntoGraph(UEdGr
 	// The generated class declares the nodes; the CDO holds their values.
 	TSharedPtr<FJsonObject> ClassExport;
 	TSharedPtr<FJsonObject> DefaultsExport;
+	// Holds folded node properties (see BuildFoldedValues). Optional.
+	TSharedPtr<FJsonObject> ConstantDataExport;
 
 	for (const TSharedPtr<FJsonValue>& ExportValue : Exports)
 	{
@@ -840,6 +1073,10 @@ FKawaiiPhysicsJsonImportResult UKawaiiPhysicsJsonImporter::ImportIntoGraph(UEdGr
 		if (Name.StartsWith(TEXT("Default__")))
 		{
 			DefaultsExport = Export;
+		}
+		else if (Name == TEXT("AnimBlueprintGeneratedConstantData"))
+		{
+			ConstantDataExport = Export;
 		}
 	}
 
@@ -898,14 +1135,51 @@ FKawaiiPhysicsJsonImportResult UKawaiiPhysicsJsonImporter::ImportIntoGraph(UEdGr
 	// Any valid skeleton constructs a stub; contents are irrelevant to it.
 	Context.Skeleton = SkeletonForStubs;
 
-	TMap<int32, UAnimGraphNode_Base*> NodesByLinkIndex;
-	TMap<int32, int32> SourceLinkByLinkIndex;
+	// Folded properties live in the class's constant data, not on the node.
+	const TArray<TSharedPtr<FJsonObject>> FoldedValues =
+		BuildFoldedValues(ClassExport, DefaultsExport, ConstantDataExport, NodeStructTypes);
 
-	int32 Column = 0;
+	// The whole graph between the AnimBlueprint's input and output is the game's
+	// setup, so all of it is recreated. Only the two ends are not: the output
+	// (Root) and the linked input pose already exist in the graph this is pasted
+	// into, and joining them up is the modder's call.
+	auto IsGraphEnd = [](const FString& StructType)
+	{
+		return StructType == TEXT("AnimNode_Root") || StructType == TEXT("AnimNode_LinkedInputPose");
+	};
+
+	// A save-cached-pose node nothing reads is dead in the game too; recreating
+	// it would only add a nameless cache. Find which ones are actually used.
+	TSet<int32> UsedCacheIndices;
+	for (int32 LinkIndex = 0; LinkIndex < NodePropertyOrder.Num(); ++LinkIndex)
+	{
+		const TSharedPtr<FJsonObject>* NodeObjectPtr = nullptr;
+		const TSharedPtr<FJsonObject>* CacheLink = nullptr;
+		int32 CacheIndex = INDEX_NONE;
+		if (NodeStructTypes[LinkIndex] == TEXT("AnimNode_UseCachedPose") &&
+			(*Properties)->TryGetObjectField(NodePropertyOrder[LinkIndex], NodeObjectPtr) &&
+			(*NodeObjectPtr)->TryGetObjectField(TEXT("LinkToCachingNode"), CacheLink) &&
+			(*CacheLink)->TryGetNumberField(TEXT("LinkID"), CacheIndex))
+		{
+			UsedCacheIndices.Add(CacheIndex);
+		}
+	}
+
+	TMap<int32, UAnimGraphNode_Base*> NodesByLinkIndex;
+	TMap<int32, TArray<FPoseInput>> InputsByLinkIndex;
+	TMap<int32, int32> CacheLinkByLinkIndex;
+	bool bHasGraphEnds = false;
 
 	for (int32 LinkIndex = 0; LinkIndex < NodePropertyOrder.Num(); ++LinkIndex)
 	{
 		const FString& PropertyName = NodePropertyOrder[LinkIndex];
+		const FString& StructType = NodeStructTypes[LinkIndex];
+
+		if (IsGraphEnd(StructType))
+		{
+			bHasGraphEnds = true;
+			continue;
+		}
 
 		const TSharedPtr<FJsonObject>* NodeObjectPtr = nullptr;
 		if (!(*Properties)->TryGetObjectField(PropertyName, NodeObjectPtr) || !NodeObjectPtr)
@@ -913,29 +1187,167 @@ FKawaiiPhysicsJsonImportResult UKawaiiPhysicsJsonImporter::ImportIntoGraph(UEdGr
 			continue;
 		}
 
-		const TSharedPtr<FJsonObject> NodeObject = *NodeObjectPtr;
-		const FString& StructType = NodeStructTypes[LinkIndex];
+		// Work on a copy: folded values are merged in and inputs stripped out.
+		const TSharedPtr<FJsonObject> NodeObject = MakeShared<FJsonObject>(**NodeObjectPtr);
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : FoldedValues[LinkIndex]->Values)
+		{
+			if (!NodeObject->HasField(Pair.Key))
+			{
+				NodeObject->SetField(Pair.Key, Pair.Value);
+			}
+		}
 
-		// Only this plugin's own nodes can be recreated. Everything else in a
-		// physics AnimBlueprint -- Pose Driver, Constraint, the pose-space
-		// conversions -- belongs to the engine and is reported, not invented.
-		const bool bIsKawaii = StructType == TEXT("AnimNode_KawaiiPhysics");
-		const bool bIsKawaiiMerge = StructType == TEXT("AnimNode_KawaiiPhysicsMerge");
+		if (StructType == TEXT("AnimNode_SaveCachedPose") && !UsedCacheIndices.Contains(LinkIndex))
+		{
+			continue;
+		}
 
-		// Stock engine bone controllers that the game's physics graphs are built
-		// out of alongside the Kawaii chains. They are not this plugin's nodes,
-		// but they are part of the setup being recovered, and a graph missing
-		// them is not the setup the game runs.
-		//
-		// Counted across all 3,531 cooked *_Physics packages: Constraint 1533,
-		// PoseDriver 593, ModifyBone 305, CopyBone 2. Each takes a single
-		// component-space pose input, so the generic path below handles them.
-		const bool bIsPoseDriver = StructType == TEXT("AnimNode_PoseDriver");
-		const bool bIsConstraint = StructType == TEXT("AnimNode_Constraint");
-		const bool bIsModifyBone = StructType == TEXT("AnimNode_ModifyBone");
-		const bool bIsCopyBone = StructType == TEXT("AnimNode_CopyBone");
+		FString CacheName;
+		NodeObject->TryGetStringField(TEXT("CachePoseName"), CacheName);
 
-		if (!bIsKawaii && !bIsKawaiiMerge && !bIsPoseDriver && !bIsConstraint && !bIsModifyBone && !bIsCopyBone)
+		TArray<FPoseInput> Inputs;
+		int32 CacheLinkIndex = INDEX_NONE;
+		CollectPoseInputs(NodeObject, Inputs, CacheLinkIndex);
+
+		UAnimGraphNode_Base* GraphNode = nullptr;
+		bool bRecognised = true;
+
+		// One shape per node type: convert into the runtime struct, place the
+		// matching graph node, THEN hand it the struct and rebuild its pins.
+		// Order matters: placing a node runs its own setup -- a Blend List adds a
+		// pose of its own -- which would otherwise land on top of the imported
+		// data. Rebuilding allocates pins from the imported struct, so array
+		// inputs (blend poses) get exactly one pin per element.
+		#define KAWAIIPHYSICS_IMPORT_NODE(RuntimeType, GraphType, FixUp) \
+			{ \
+				RuntimeType ImportedNode; \
+				if (!ParseNodeStructWithContext(NodeObject, RuntimeType::StaticStruct(), &ImportedNode, Context)) \
+				{ \
+					UE_LOG(LogKawaiiPhysicsEd, Warning, \
+					       TEXT("KawaiiPhysics import: could not convert '%s'; skipped."), *PropertyName); \
+					continue; \
+				} \
+				FixUp \
+				FGraphNodeCreator<GraphType> NodeCreator(*AnimGraph); \
+				GraphType* NewNode = NodeCreator.CreateNode(); \
+				NodeCreator.Finalize(); \
+				NewNode->Node = ImportedNode; \
+				NewNode->ReconstructNode(); \
+				GraphNode = NewNode; \
+			}
+
+		if (StructType == TEXT("AnimNode_KawaiiPhysics"))
+		{
+			KAWAIIPHYSICS_IMPORT_NODE(FAnimNode_KawaiiPhysics, UAnimGraphNode_KawaiiPhysics, ;)
+		}
+		else if (StructType == TEXT("AnimNode_KawaiiPhysicsMerge"))
+		{
+			KAWAIIPHYSICS_IMPORT_NODE(FAnimNode_KawaiiPhysicsMerge, UAnimGraphNode_KawaiiPhysicsMerge, ;)
+		}
+		else if (StructType == TEXT("AnimNode_PoseDriver"))
+		{
+			KAWAIIPHYSICS_IMPORT_NODE(FAnimNode_PoseDriver, UAnimGraphNode_PoseDriver, ;)
+		}
+		else if (StructType == TEXT("AnimNode_Constraint"))
+		{
+			KAWAIIPHYSICS_IMPORT_NODE(FAnimNode_Constraint, UAnimGraphNode_Constraint, ;)
+		}
+		else if (StructType == TEXT("AnimNode_ModifyBone"))
+		{
+			KAWAIIPHYSICS_IMPORT_NODE(FAnimNode_ModifyBone, UAnimGraphNode_ModifyBone, ;)
+		}
+		else if (StructType == TEXT("AnimNode_CopyBone"))
+		{
+			KAWAIIPHYSICS_IMPORT_NODE(FAnimNode_CopyBone, UAnimGraphNode_CopyBone, ;)
+		}
+		else if (StructType == TEXT("AnimNode_SpringBone"))
+		{
+			KAWAIIPHYSICS_IMPORT_NODE(FAnimNode_SpringBone, UAnimGraphNode_SpringBone, ;)
+		}
+		else if (StructType == TEXT("AnimNode_ConvertLocalToComponentSpace"))
+		{
+			KAWAIIPHYSICS_IMPORT_NODE(FAnimNode_ConvertLocalToComponentSpace, UAnimGraphNode_LocalToComponentSpace, ;)
+		}
+		else if (StructType == TEXT("AnimNode_ConvertComponentToLocalSpace"))
+		{
+			KAWAIIPHYSICS_IMPORT_NODE(FAnimNode_ConvertComponentToLocalSpace, UAnimGraphNode_ComponentToLocalSpace, ;)
+		}
+		else if (StructType == TEXT("AnimNode_BlendListByInt"))
+		{
+			// One blend time per input (the engine's default 0.1, as AddPose uses)
+			// if the folded value was absent. Done on the JSON: the node's arrays
+			// are not publicly writable.
+			const TArray<TSharedPtr<FJsonValue>>* BlendPoses = nullptr;
+			if (NodeObject->TryGetArrayField(TEXT("BlendPose"), BlendPoses))
+			{
+				TArray<TSharedPtr<FJsonValue>> BlendTimes;
+				const TArray<TSharedPtr<FJsonValue>>* Existing = nullptr;
+				if (NodeObject->TryGetArrayField(TEXT("BlendTime"), Existing))
+				{
+					BlendTimes = *Existing;
+				}
+				while (BlendTimes.Num() < BlendPoses->Num())
+				{
+					BlendTimes.Add(MakeShared<FJsonValueNumber>(0.1));
+				}
+				NodeObject->SetArrayField(TEXT("BlendTime"), BlendTimes);
+			}
+			KAWAIIPHYSICS_IMPORT_NODE(FAnimNode_BlendListByInt, UAnimGraphNode_BlendListByInt, ;)
+		}
+		else if (StructType == TEXT("AnimNode_LayeredBoneBlend"))
+		{
+			// One weight and one layer description per blended pose.
+			KAWAIIPHYSICS_IMPORT_NODE(FAnimNode_LayeredBoneBlend, UAnimGraphNode_LayeredBoneBlend,
+			                          ImportedNode.BlendWeights.SetNum(ImportedNode.BlendPoses.Num());
+			                          ImportedNode.LayerSetup.SetNum(ImportedNode.BlendPoses.Num());)
+		}
+		else if (StructType == TEXT("AnimNode_ApplyAdditive"))
+		{
+			KAWAIIPHYSICS_IMPORT_NODE(FAnimNode_ApplyAdditive, UAnimGraphNode_ApplyAdditive, ;)
+		}
+		else if (StructType == TEXT("AnimNode_BlendBoneByChannel"))
+		{
+			// Its graph node keeps the struct in BlendNode, not Node.
+			FAnimNode_BlendBoneByChannel ImportedNode;
+			if (!ParseNodeStructWithContext(NodeObject, FAnimNode_BlendBoneByChannel::StaticStruct(), &ImportedNode,
+			                                Context))
+			{
+				UE_LOG(LogKawaiiPhysicsEd, Warning, TEXT("KawaiiPhysics import: could not convert '%s'; skipped."),
+				       *PropertyName);
+				continue;
+			}
+			FGraphNodeCreator<UAnimGraphNode_BlendBoneByChannel> NodeCreator(*AnimGraph);
+			UAnimGraphNode_BlendBoneByChannel* NewNode = NodeCreator.CreateNode();
+			NodeCreator.Finalize();
+			NewNode->BlendNode = ImportedNode;
+			NewNode->ReconstructNode();
+			GraphNode = NewNode;
+		}
+		else if (StructType == TEXT("AnimNode_SequencePlayer"))
+		{
+			KAWAIIPHYSICS_IMPORT_NODE(FAnimNode_SequencePlayer, UAnimGraphNode_SequencePlayer, ;)
+		}
+		else if (StructType == TEXT("AnimNode_SaveCachedPose"))
+		{
+			KAWAIIPHYSICS_IMPORT_NODE(FAnimNode_SaveCachedPose, UAnimGraphNode_SaveCachedPose, ;)
+			// Set after creation: placing a new save node gives it a default name.
+			if (UAnimGraphNode_SaveCachedPose* SaveNode = Cast<UAnimGraphNode_SaveCachedPose>(GraphNode))
+			{
+				SaveNode->CacheName = CacheName;
+			}
+		}
+		else if (StructType == TEXT("AnimNode_UseCachedPose"))
+		{
+			KAWAIIPHYSICS_IMPORT_NODE(FAnimNode_UseCachedPose, UAnimGraphNode_UseCachedPose, ;)
+		}
+		else
+		{
+			bRecognised = false;
+		}
+
+		#undef KAWAIIPHYSICS_IMPORT_NODE
+
+		if (!bRecognised)
 		{
 			if (!StructType.IsEmpty())
 			{
@@ -944,128 +1356,120 @@ FKawaiiPhysicsJsonImportResult UKawaiiPhysicsJsonImporter::ImportIntoGraph(UEdGr
 			continue;
 		}
 
-		// Captured before sanitising strips the link.
-		SourceLinkByLinkIndex.Add(LinkIndex, ReadComponentPoseLinkId(NodeObject));
-
-		UAnimGraphNode_Base* GraphNode = nullptr;
-
-		// One shape per node type: convert into the runtime struct, then spawn the
-		// matching graph node and hand it the struct.
-		#define KAWAIIPHYSICS_IMPORT_NODE(RuntimeType, GraphType) 			{ 				RuntimeType ImportedNode; 				if (!ParseNodeStructWithContext(NodeObject, RuntimeType::StaticStruct(), &ImportedNode, Context)) 				{ 					UE_LOG(LogKawaiiPhysicsEd, Warning, 					       TEXT("KawaiiPhysics import: could not convert '%s'; skipped."), *PropertyName); 					continue; 				} 				FGraphNodeCreator<GraphType> NodeCreator(*AnimGraph); 				GraphType* NewNode = NodeCreator.CreateNode(); 				NewNode->Node = ImportedNode; 				NewNode->NodePosX = Column * 400; 				NewNode->NodePosY = 0; 				NodeCreator.Finalize(); 				GraphNode = NewNode; 			}
-
-		if (bIsKawaii)
-		{
-			KAWAIIPHYSICS_IMPORT_NODE(FAnimNode_KawaiiPhysics, UAnimGraphNode_KawaiiPhysics)
-		}
-		else if (bIsKawaiiMerge)
-		{
-			KAWAIIPHYSICS_IMPORT_NODE(FAnimNode_KawaiiPhysicsMerge, UAnimGraphNode_KawaiiPhysicsMerge)
-		}
-		else if (bIsPoseDriver)
-		{
-			KAWAIIPHYSICS_IMPORT_NODE(FAnimNode_PoseDriver, UAnimGraphNode_PoseDriver)
-		}
-		else if (bIsConstraint)
-		{
-			KAWAIIPHYSICS_IMPORT_NODE(FAnimNode_Constraint, UAnimGraphNode_Constraint)
-		}
-		else if (bIsModifyBone)
-		{
-			KAWAIIPHYSICS_IMPORT_NODE(FAnimNode_ModifyBone, UAnimGraphNode_ModifyBone)
-		}
-		else
-		{
-			KAWAIIPHYSICS_IMPORT_NODE(FAnimNode_CopyBone, UAnimGraphNode_CopyBone)
-		}
-
-		#undef KAWAIIPHYSICS_IMPORT_NODE
-
 		NodesByLinkIndex.Add(LinkIndex, GraphNode);
-		++Column;
+		InputsByLinkIndex.Add(LinkIndex, MoveTemp(Inputs));
+		if (CacheLinkIndex != INDEX_NONE)
+		{
+			CacheLinkByLinkIndex.Add(LinkIndex, CacheLinkIndex);
+		}
 		++Result.NodesCreated;
 	}
 
 	if (Result.NodesCreated == 0)
 	{
-		Result.Message = TEXT("No Kawaii Physics nodes found in that export.");
+		Result.Message = TEXT("Nothing importable in that export. Recognised: Kawaii Physics (+ Merge), Pose Driver, "
+		                      "Constraint, Transform (Modify) Bone, Copy Bone, Spring Bone, space conversions, "
+		                      "Blend Poses by Int, Layered Blend per Bone, Apply Additive, Blend Bone by Channel, "
+		                      "Sequence Player, and cached poses.");
 		return Result;
+	}
+
+	// Cached poses are joined by reference, not by a pin: point each use node at
+	// its save node. Asking for the title fills in the cache name it shows and
+	// carries through a copy/paste.
+	for (const TPair<int32, int32>& CacheLink : CacheLinkByLinkIndex)
+	{
+		UAnimGraphNode_UseCachedPose* UseNode = Cast<UAnimGraphNode_UseCachedPose>(NodesByLinkIndex.FindRef(CacheLink.Key));
+		UAnimGraphNode_SaveCachedPose* SaveNode =
+			Cast<UAnimGraphNode_SaveCachedPose>(NodesByLinkIndex.FindRef(CacheLink.Value));
+		if (UseNode && SaveNode)
+		{
+			UseNode->SaveCachedPoseNode = SaveNode;
+			UseNode->GetNodeTitle(ENodeTitleType::FullTitle);
+		}
 	}
 
 	if (bRestoreNodeLinks)
 	{
-		// Rebuild the original evaluation order. Links to nodes that were not
-		// imported (pose conversions, linked input) are left open deliberately:
-		// how this chain plugs into the host graph is the modder's decision.
-		for (const TPair<int32, UAnimGraphNode_Base*>& Pair : NodesByLinkIndex)
+		// Rebuild every pose connection. An input whose source was not recreated
+		// -- the graph's input pose, or an unsupported node -- is left open.
+		for (const TPair<int32, TArray<FPoseInput>>& NodeInputs : InputsByLinkIndex)
 		{
-			const int32 SourceLink = SourceLinkByLinkIndex.FindRef(Pair.Key);
-			UAnimGraphNode_Base* const* SourceNode = NodesByLinkIndex.Find(SourceLink);
-			if (!SourceNode || !*SourceNode)
+			UAnimGraphNode_Base* TargetNode = NodesByLinkIndex.FindRef(NodeInputs.Key);
+			for (const FPoseInput& Input : NodeInputs.Value)
 			{
-				continue;
-			}
-
-			UEdGraphPin* InputPin = Pair.Value->FindPin(TEXT("ComponentPose"), EGPD_Input);
-
-			UEdGraphPin* OutputPin = nullptr;
-			for (UEdGraphPin* Pin : (*SourceNode)->Pins)
-			{
-				if (Pin && Pin->Direction == EGPD_Output)
+				UAnimGraphNode_Base* SourceNode = NodesByLinkIndex.FindRef(Input.SourceLinkIndex);
+				if (!TargetNode || !SourceNode)
 				{
-					OutputPin = Pin;
-					break;
-				}
-			}
-
-			if (InputPin && OutputPin)
-			{
-				OutputPin->MakeLinkTo(InputPin);
-				++Result.LinksRestored;
-			}
-		}
-
-		// Lay the chain out in evaluation order rather than declaration order,
-		// so the imported graph reads left to right.
-		int32 LayoutColumn = 0;
-		TSet<int32> Placed;
-		for (const TPair<int32, UAnimGraphNode_Base*>& Pair : NodesByLinkIndex)
-		{
-			// Walk to the head of this node's chain, then place forwards.
-			int32 Head = Pair.Key;
-			int32 Guard = 0;
-			while (NodesByLinkIndex.Contains(SourceLinkByLinkIndex.FindRef(Head)) && Guard++ < NodePropertyOrder.Num())
-			{
-				Head = SourceLinkByLinkIndex.FindRef(Head);
-			}
-
-			for (int32 Current = Head, Step = 0; Step <= NodePropertyOrder.Num(); ++Step)
-			{
-				if (Placed.Contains(Current))
-				{
-					break;
+					continue;
 				}
 
-				Placed.Add(Current);
-				NodesByLinkIndex[Current]->NodePosX = LayoutColumn++ * 400;
-
-				// Find whichever node consumes this one.
-				int32 Next = INDEX_NONE;
-				for (const TPair<int32, int32>& Link : SourceLinkByLinkIndex)
+				UEdGraphPin* InputPin = TargetNode->FindPin(Input.PinName, EGPD_Input);
+				UEdGraphPin* OutputPin = nullptr;
+				for (UEdGraphPin* Pin : SourceNode->Pins)
 				{
-					if (Link.Value == Current && NodesByLinkIndex.Contains(Link.Key))
+					if (Pin && Pin->Direction == EGPD_Output)
 					{
-						Next = Link.Key;
+						OutputPin = Pin;
 						break;
 					}
 				}
 
-				if (Next == INDEX_NONE)
+				if (InputPin && OutputPin)
 				{
-					break;
+					OutputPin->MakeLinkTo(InputPin);
+					++Result.LinksRestored;
 				}
-				Current = Next;
+				else
+				{
+					UE_LOG(LogKawaiiPhysicsEd, Warning, TEXT("KawaiiPhysics import: no pin '%s' to reconnect on %s."),
+					       *Input.PinName.ToString(), *TargetNode->GetName());
+				}
 			}
 		}
+	}
+
+	// Lay the graph out left to right by depth: each node one column past the
+	// deepest node feeding it (a use-cached-pose node counts as fed by its
+	// save node). Handles branches and merges, which a single chain walk can't.
+	TMap<int32, int32> Depth;
+	TFunction<int32(int32, int32)> GetDepth = [&](int32 LinkIndex, int32 Guard) -> int32
+	{
+		if (const int32* Known = Depth.Find(LinkIndex))
+		{
+			return *Known;
+		}
+		int32 MaxDepth = 0;
+		if (Guard < NodePropertyOrder.Num())
+		{
+			TArray<int32> Sources;
+			for (const FPoseInput& Input : InputsByLinkIndex.FindRef(LinkIndex))
+			{
+				Sources.Add(Input.SourceLinkIndex);
+			}
+			if (const int32* CacheSource = CacheLinkByLinkIndex.Find(LinkIndex))
+			{
+				Sources.Add(*CacheSource);
+			}
+			for (const int32 Source : Sources)
+			{
+				if (NodesByLinkIndex.Contains(Source))
+				{
+					MaxDepth = FMath::Max(MaxDepth, GetDepth(Source, Guard + 1) + 1);
+				}
+			}
+		}
+		Depth.Add(LinkIndex, MaxDepth);
+		return MaxDepth;
+	};
+
+	TMap<int32, int32> RowsUsed;
+	for (const TPair<int32, UAnimGraphNode_Base*>& Pair : NodesByLinkIndex)
+	{
+		const int32 Column = GetDepth(Pair.Key, 0);
+		int32& Row = RowsUsed.FindOrAdd(Column);
+		Pair.Value->NodePosX = Column * 400;
+		Pair.Value->NodePosY = Row++ * 250;
 	}
 
 	Result.UnresolvedAssetReferences = Context.UnresolvedReferences;
@@ -1074,8 +1478,12 @@ FKawaiiPhysicsJsonImportResult UKawaiiPhysicsJsonImporter::ImportIntoGraph(UEdGr
 
 	Result.bSuccess = true;
 	Result.Message = FString::Printf(
-		TEXT("Imported %d Kawaii Physics node(s), restored %d link(s)."),
+		TEXT("Imported %d node(s), restored %d link(s)."),
 		Result.NodesCreated, Result.LinksRestored);
+	if (bHasGraphEnds)
+	{
+		Result.Message += TEXT(" Connect your graph's Input Pose and Output Pose to the open ends.");
+	}
 
 	if (Result.ExternalForcesRebuilt > 0)
 	{
@@ -1101,7 +1509,7 @@ FKawaiiPhysicsJsonImportResult UKawaiiPhysicsJsonImporter::ImportIntoGraph(UEdGr
 	{
 		// Naming them matters: the user is looking at a graph that does not match
 		// the one they exported, and this is the reason why.
-		Result.Message += FString::Printf(TEXT(" Skipped non-Kawaii node type(s): %s."),
+		Result.Message += FString::Printf(TEXT(" Not recreated (graph plumbing or unsupported): %s."),
 		                                  *FString::Join(Result.SkippedNodeTypes, TEXT(", ")));
 	}
 
@@ -1178,7 +1586,7 @@ FString UKawaiiPhysicsJsonImporter::ConvertJsonToNodeText(const FString& JsonTex
 
 	if (Result.SkippedNodeTypes.Num() > 0)
 	{
-		Result.Message += FString::Printf(TEXT(" Skipped non-Kawaii node type(s): %s."),
+		Result.Message += FString::Printf(TEXT(" Not recreated (graph plumbing or unsupported): %s."),
 		                                  *FString::Join(Result.SkippedNodeTypes, TEXT(", ")));
 	}
 

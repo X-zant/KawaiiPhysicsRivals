@@ -72,9 +72,14 @@ FText UKawaiiPhysicsJsonFactory::GetDisplayName() const
 
 bool UKawaiiPhysicsJsonFactory::FactoryCanImport(const FString& Filename)
 {
-	// ".json" is far too common to claim outright, so only accept files that
-	// actually look like an FModel export of an AnimBlueprint containing Kawaii
-	// Physics nodes. Anything else is left to whatever else handles JSON.
+	// ".json" is far too common to claim outright, so only accept an export of
+	// a cooked AnimBlueprint -- whatever nodes it holds. Claiming every
+	// AnimBlueprint export, not just ones with Kawaii nodes, is deliberate:
+	// a generic JSON-to-asset importer (J2A_Plugin) turns such a file into a
+	// bare AnimBlueprintGeneratedClass with no default object, which crashes
+	// the editor the moment the Content Browser asks it for its asset id. An
+	// export with nothing importable is reported here instead, and nothing is
+	// created.
 	if (!Filename.EndsWith(TEXT(".json"), ESearchCase::IgnoreCase))
 	{
 		return false;
@@ -86,8 +91,9 @@ bool UKawaiiPhysicsJsonFactory::FactoryCanImport(const FString& Filename)
 		return false;
 	}
 
-	const bool bCanImport = Text.Contains(TEXT("AnimBlueprintGeneratedClass"))
-		&& Text.Contains(TEXT("AnimNode_KawaiiPhysics"));
+	// Quoted, so it matches the export's "Type" value -- FModel writes
+	// `"Type": "AnimBlueprintGeneratedClass"` -- rather than any mention.
+	const bool bCanImport = Text.Contains(TEXT("\"AnimBlueprintGeneratedClass\""));
 
 	UE_LOG(LogKawaiiPhysicsEd, Verbose, TEXT("FactoryCanImport('%s') = %s"), *Filename,
 	       bCanImport ? TEXT("true") : TEXT("false"));

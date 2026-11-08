@@ -1,7 +1,7 @@
 {
     "FileVersion": 3,
-    "Version": 2000,
-    "VersionName": "2.0.0",
+    "Version": 2100,
+    "VersionName": "2.1.0",
     "FriendlyName": "Kawaii Physics (Rivals schema)",
     "Description": "Kawaii Physics rebuilt to match the reflected schema of the shipped game's KawaiiPhysics module (UE 5.3.2). Based on pafuhana1213/KawaiiPhysics v1.18.0.",
     "Category": "Animation",
